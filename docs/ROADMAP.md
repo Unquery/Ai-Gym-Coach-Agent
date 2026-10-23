@@ -1,7 +1,7 @@
 # Roadmap
 
 - [x] Phase 0 (Milestone 1) — Confirm MVP, Python/uv environment, minimal FastAPI health endpoint, README, and pytest setup.
-- [ ] Phase 1 — Define workout/exercise/set schema and persistence; seed synthetic workouts.
+- [x] Phase 1 (Milestone 2) — Define workout/exercise/set/plan schema and PostgreSQL persistence; add Alembic migrations, synthetic seed, and relationship tests.
 - [ ] Phase 2 — CRUD and stats APIs; deterministic progress calculations and tests.
 - [ ] Phase 3 — LLM tool calling with read tools and a clear agent loop.
 - [ ] Phase 4 — Write tools with explicit confirmation, validation, and user-scoped access.

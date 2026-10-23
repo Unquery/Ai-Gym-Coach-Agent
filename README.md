@@ -2,7 +2,7 @@
 
 An AI-powered workout logging and progress analysis assistant built as a Junior AI Engineering portfolio project.
 
-**Status:** Milestone 1 — minimal FastAPI application with a tested health endpoint.
+**Status:** Milestone 2 — PostgreSQL workout storage, SQLAlchemy models, and Alembic migrations.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
@@ -33,7 +33,46 @@ uv run --locked python --version
 installs the dependencies (including test tools) at the versions in `uv.lock`.
 The session variable keeps uv's cache inside this repository; set it again in each
 new shell if the default user cache is not writable. No virtual environment
-activation, database, API key, or `.env` file is needed for this milestone.
+activation is needed. The health endpoint needs no database or API key.
+
+## PostgreSQL storage
+
+Install [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)
+with Docker Compose, or use an existing PostgreSQL 17 instance.
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Edit the local `.env`: replace both password placeholders with distinct random
+passwords, then put the URL-encoded application password in `DATABASE_URL` and
+`TEST_DATABASE_URL`. The example contains placeholders only; `.env` is ignored.
+
+```powershell
+docker compose up -d --wait
+uv run --env-file .env --locked alembic upgrade head
+uv run --env-file .env --locked alembic current
+# Optional: explicitly populate synthetic demonstration data.
+uv run --env-file .env --locked python -m app.seed
+```
+
+The database binds only to `127.0.0.1:5432`. The application connects as `gym_app`,
+a non-superuser that owns its migrated tables; it must not use the bootstrap
+`postgres` account. Initialization grants `gym_app` schema-creation permission
+for migrations and isolated tests. For a deployed application, use separate
+migration/test credentials and reduce runtime privileges.
+
+The demo seed is repeatable and contains no real workout history. Its fixed user
+UUID is `00000000-0000-0000-0000-000000000001`. It adds two demo exercises, one
+plan, and one historical workout with three sets. It does not repair or overwrite
+an existing demo plan.
+
+The named Docker volume preserves data across container restarts and
+`docker compose down`. Initialization SQL runs only for a new volume; editing
+`.env` later does not change existing database passwords.
+
+See [the storage design](docs/DATABASE.md) for tables, ownership, and transaction
+boundaries. Workout HTTP endpoints and authentication are not implemented yet.
 
 ## Run
 
@@ -60,10 +99,20 @@ Stop the server with Ctrl+C.
 ```powershell
 $env:UV_CACHE_DIR = Join-Path (Get-Location) ".uv-cache"
 uv run --locked pytest
+# Include persistence and migration tests against a real PostgreSQL database:
+uv run --env-file .env --locked pytest
 ```
 
-The test uses FastAPI's `TestClient` to check the health endpoint's status,
-content type, and JSON body without starting a server or making paid API calls.
+API tests use FastAPI's `TestClient` without starting a server. PostgreSQL tests
+create a unique `test_<uuid>` schema, apply the actual Alembic migration, and
+remove only that schema afterward. They cover commit/reload, rollback,
+relationships, constraints, ownership, seed repeatability, and migration
+upgrade/downgrade/model agreement. Use a dedicated local test database; the role
+needs permission to create schemas. No paid API calls are made.
+
+Without `TEST_DATABASE_URL`, PostgreSQL tests are explicitly skipped. Skipped
+tests do not validate persistence. With the variable set, connection or migration
+failures fail the tests. To run only database tests, add `-m postgres`.
 
 If a Windows sandbox reports `PytestCacheWarning` while creating its temporary
 cache directory, pre-create the ignored cache directory, then rerun the test:
@@ -77,8 +126,15 @@ uv run --locked pytest
 
 ```text
 app/main.py           FastAPI application and health route
-tests/test_health.py  HTTP contract test
+app/database.py       PostgreSQL engine and declarative base
+app/models.py         Exercise, plan, workout, and set models
+app/seed.py           Explicit synthetic demo seed
+migrations/           Versioned schema changes
+alembic.ini           Migration configuration (no credentials)
+compose.yaml          Local PostgreSQL with persistent volume
+docker/postgres/      Non-superuser application-role initialization
+tests/                HTTP, PostgreSQL persistence, and migration tests
 pyproject.toml        Runtime/dev dependencies and pytest configuration
 uv.lock               Resolved dependency versions; keep in version control
-docs/                 Project context and roadmap
+docs/                 Technical context, storage design, and roadmap
 ```

@@ -15,7 +15,17 @@ Python 3.12+, FastAPI, PostgreSQL, SQLAlchemy, Pydantic, pytest, Docker Compose.
 Milestone 1 uses Python 3.12, uv with a reproducible lockfile, FastAPI/Uvicorn, and
 pytest with HTTPX2/TestClient. The application entry point is `app.main:app`;
 `GET /health` returns HTTP 200 with `{"status":"ok"}`. PostgreSQL and LLM
-integration remain deferred to later milestones.
+integration were deferred to later milestones.
+
+Milestone 2 adds synchronous SQLAlchemy 2 models, psycopg 3, PostgreSQL 17, and
+Alembic revision `0001`. Five tables separate a shared exercise catalog, user-owned
+plans and ordered plan entries, and performed workouts/sets. Plans are reusable
+single-session templates; actual sets are independent historical facts. Owner UUIDs
+anticipate authentication without introducing a users service. A composite FK
+prevents cross-owner plan attachment. See [DATABASE.md](DATABASE.md) for the schema,
+transaction boundaries, and permissions. Docker Compose provides local storage;
+real PostgreSQL tests run in disposable schemas. Workout APIs, authentication,
+statistics, and LLM integration remain deferred.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
