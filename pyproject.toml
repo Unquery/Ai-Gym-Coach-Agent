@@ -5,7 +5,10 @@ description = "An AI-powered workout logging and progress analysis assistant."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.16,<2",
     "fastapi>=0.162,<1",
+    "psycopg[binary]>=3.2,<4",
+    "sqlalchemy>=2.0,<2.1",
     "uvicorn>=0.30,<1",
 ]
 
@@ -18,3 +21,4 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["postgres: integration tests requiring TEST_DATABASE_URL"]
