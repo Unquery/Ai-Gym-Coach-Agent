@@ -1,10 +1,12 @@
-"""Database configuration shared by scripts, migrations, and future API handlers."""
+"""Database configuration shared by scripts, migrations, and API handlers."""
 
 import os
+from collections.abc import Iterator
+from functools import cache
 
 from sqlalchemy import Engine, MetaData, create_engine
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session
 
 
 class Base(DeclarativeBase):
@@ -39,3 +41,14 @@ def create_db_engine(url: str | URL | None = None) -> Engine:
         pool_pre_ping=True,
         hide_parameters=True,
     )
+
+
+@cache
+def get_engine() -> Engine:
+    """Create the shared API engine only when a database request needs it."""
+    return create_db_engine()
+
+
+def get_session() -> Iterator[Session]:
+    with Session(get_engine()) as session:
+        yield session

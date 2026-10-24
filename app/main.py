@@ -1,6 +1,14 @@
 """HTTP entry point for AI Gym Coach."""
 
-from fastapi import FastAPI
+from typing import Annotated
+
+from fastapi import Depends, FastAPI
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.database import get_session
+from app.models import Exercise
+from app.schemas import ExerciseRead
 
 app = FastAPI(title="AI Gym Coach")
 
@@ -8,3 +16,8 @@ app = FastAPI(title="AI Gym Coach")
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/exercises", response_model=list[ExerciseRead])
+def list_exercises(session: Annotated[Session, Depends(get_session)]) -> list[Exercise]:
+    return list(session.scalars(select(Exercise).order_by(Exercise.id)))

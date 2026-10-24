@@ -2,7 +2,7 @@
 
 An AI-powered workout logging and progress analysis assistant built as a Junior AI Engineering portfolio project.
 
-**Status:** Milestone 2 — PostgreSQL workout storage, SQLAlchemy models, and Alembic migrations.
+**Status:** Milestone 3 in progress — exercise catalog API backed by PostgreSQL.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
@@ -80,7 +80,7 @@ From the repository root in PowerShell:
 
 ```powershell
 $env:UV_CACHE_DIR = Join-Path (Get-Location) ".uv-cache"
-uv run --locked uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+uv run --env-file .env --locked uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Open <http://127.0.0.1:8000/docs> for the interactive API documentation.
@@ -88,11 +88,21 @@ In a second PowerShell window, check the running application:
 
 ```powershell
 Invoke-RestMethod -Uri http://127.0.0.1:8000/health
+Invoke-RestMethod -Uri http://127.0.0.1:8000/exercises
 ```
 
 `GET /health` returns HTTP 200 with JSON `{"status":"ok"}`. This endpoint checks
 that the application responds; it does not check database or LLM availability.
 Stop the server with Ctrl+C.
+
+`GET /exercises` returns HTTP 200 with the shared exercise catalog, ordered by
+`id`, for example `[{"id":1,"name":"Demo squat"}]`. An empty catalog returns `[]`.
+The endpoint reads existing records only; it requires `DATABASE_URL`, a running
+PostgreSQL database, and applied migrations. Each request gets its own SQLAlchemy
+session; the Pydantic response schema exposes only `id` and `name`.
+
+To run only `/health` without a local `.env` file or database configuration, omit
+`--env-file .env` from the server command. Database access is initialized lazily.
 
 ## Test
 
@@ -125,9 +135,10 @@ uv run --locked pytest
 ## Layout
 
 ```text
-app/main.py           FastAPI application and health route
-app/database.py       PostgreSQL engine and declarative base
+app/main.py           FastAPI application, health and exercise catalog routes
+app/database.py       PostgreSQL engine, request sessions, and declarative base
 app/models.py         Exercise, plan, workout, and set models
+app/schemas.py        Public HTTP response schemas
 app/seed.py           Explicit synthetic demo seed
 migrations/           Versioned schema changes
 alembic.ini           Migration configuration (no credentials)

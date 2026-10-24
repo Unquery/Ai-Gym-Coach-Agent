@@ -1,9 +1,11 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 
 
-def test_health_returns_ok() -> None:
+def test_health_returns_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     with TestClient(app) as client:
         response = client.get("/health")
 
