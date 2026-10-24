@@ -106,6 +106,13 @@ fields. Use an integer ID from the catalog, for example `/exercises/1`.
 A missing exercise returns HTTP 404 with `{"detail":"Exercise not found"}`.
 A non-integer ID such as `/exercises/abc` returns HTTP 422 before the lookup runs.
 
+`POST /exercises` accepts `{"name":"Synthetic squat"}` and returns HTTP 201
+with the committed exercise's `id` and `name`. The name is required, must be a
+string, and is trimmed before checking its length (1–120 characters). Invalid
+input returns HTTP 422. An existing name returns HTTP 409 with
+`{"detail":"Exercise with this name already exists"}`; uniqueness is enforced by
+PostgreSQL and is case-sensitive. A failed duplicate insert is rolled back.
+
 To run only `/health` without a local `.env` file or database configuration, omit
 `--env-file .env` from the server command. Database access is initialized lazily.
 
@@ -143,7 +150,7 @@ uv run --locked pytest
 app/main.py           FastAPI application, health and exercise catalog routes
 app/database.py       PostgreSQL engine, request sessions, and declarative base
 app/models.py         Exercise, plan, workout, and set models
-app/schemas.py        Public HTTP response schemas
+app/schemas.py        Public HTTP request and response schemas
 app/seed.py           Explicit synthetic demo seed
 migrations/           Versioned schema changes
 alembic.ini           Migration configuration (no credentials)

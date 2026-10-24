@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from app import database
@@ -25,6 +25,15 @@ def exercise_client() -> Iterator[tuple[TestClient, Mock]]:
             yield client, session
     finally:
         del app.dependency_overrides[get_session]
+
+
+@pytest.fixture
+def postgres_client(
+    postgres_engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[TestClient]:
+    monkeypatch.setattr(database, "get_engine", lambda: postgres_engine)
+    with TestClient(app) as client:
+        yield client
 
 
 @pytest.mark.parametrize(
@@ -129,3 +138,76 @@ def test_exercise_reads_postgres_by_id(
     else:
         assert response.status_code == 404
         assert response.json() == {"detail": "Exercise not found"}
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    "name",
+    ["Synthetic squat", "  Synthetic squat  ", "x" * 120, "  " + "x" * 120 + "  "],
+)
+def test_create_exercise_persists_and_returns_object(
+    postgres_client: TestClient, postgres_engine: Engine, name: str
+) -> None:
+    response = postgres_client.post("/exercises", json={"name": name})
+
+    assert response.status_code == 201
+    body = response.json()
+    assert isinstance(body["id"], int)
+    assert body["id"] > 0
+    assert body == {"id": body["id"], "name": name.strip()}
+    with Session(postgres_engine) as reader:
+        saved = reader.get(Exercise, body["id"])
+        assert saved is not None
+        assert saved.name == name.strip()
+        assert reader.scalar(select(func.count()).select_from(Exercise)) == 1
+    detail = postgres_client.get(f"/exercises/{body['id']}")
+    assert detail.status_code == 200
+    assert detail.json() == body
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"name": None},
+        {"name": 123},
+        {"name": []},
+        {"name": ""},
+        {"name": " \t\n "},
+        {"name": "x" * 121},
+    ],
+)
+def test_create_exercise_rejects_invalid_name_without_writing(
+    postgres_client: TestClient, postgres_engine: Engine, payload: dict[str, object]
+) -> None:
+    response = postgres_client.post("/exercises", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "name"]
+    with Session(postgres_engine) as reader:
+        assert reader.scalar(select(func.count()).select_from(Exercise)) == 0
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("duplicate_name", ["Synthetic squat", "  Synthetic squat  "])
+def test_create_duplicate_exercise_returns_409_without_changing_catalog(
+    postgres_client: TestClient, postgres_engine: Engine, duplicate_name: str
+) -> None:
+    created = postgres_client.post("/exercises", json={"name": "Synthetic squat"})
+    assert created.status_code == 201
+
+    duplicate = postgres_client.post("/exercises", json={"name": duplicate_name})
+
+    assert duplicate.status_code == 409
+    assert duplicate.json() == {"detail": "Exercise with this name already exists"}
+    with Session(postgres_engine) as reader:
+        rows = reader.scalars(select(Exercise)).all()
+        assert [(row.id, row.name) for row in rows] == [
+            (created.json()["id"], "Synthetic squat")
+        ]
+
+    next_response = postgres_client.post("/exercises", json={"name": "Synthetic pull-up"})
+    assert next_response.status_code == 201
+    with Session(postgres_engine) as reader:
+        assert reader.scalar(select(func.count()).select_from(Exercise)) == 2

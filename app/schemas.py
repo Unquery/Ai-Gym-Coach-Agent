@@ -1,6 +1,8 @@
-"""Public HTTP response schemas."""
+"""Public HTTP request and response schemas."""
 
-from pydantic import BaseModel, ConfigDict
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 
 class ExerciseRead(BaseModel):
@@ -8,3 +10,9 @@ class ExerciseRead(BaseModel):
 
     id: int
     name: str
+
+
+class ExerciseCreate(BaseModel):
+    name: Annotated[
+        str, StringConstraints(min_length=1, max_length=120, strip_whitespace=True)
+    ]
