@@ -72,7 +72,8 @@ The named Docker volume preserves data across container restarts and
 `.env` later does not change existing database passwords.
 
 See [the storage design](docs/DATABASE.md) for tables, ownership, and transaction
-boundaries. Workout HTTP endpoints and authentication are not implemented yet.
+boundaries. Workout creation is available in demo mode; authentication is not
+implemented yet.
 
 ## Run
 
@@ -113,6 +114,21 @@ input returns HTTP 422. An existing name returns HTTP 409 with
 `{"detail":"Exercise with this name already exists"}`; uniqueness is enforced by
 PostgreSQL and is case-sensitive. A failed duplicate insert is rolled back.
 
+`POST /workouts` accepts an object with optional `plan_id` (a positive integer or
+`null`) and `started_at` (a timestamp with a timezone or `null`). Sending `{}`
+creates an unplanned workout; omitting the time or passing `null` uses the
+PostgreSQL time default. HTTP 201 returns `id`, `user_id`, `plan_id`, and
+`started_at` after the commit succeeds. This creates the workout record only;
+planned exercises are not copied into performed sets.
+
+The server dependency `get_demo_user_id` supplies the existing synthetic owner
+`00000000-0000-0000-0000-000000000001`. This is a local demo mode with no
+authentication. The request accepts only `plan_id` and `started_at`; extra
+fields, including `user_id`, return HTTP 422. A referenced plan must exist and
+belong to the server-selected owner; missing or other owners' plans return HTTP
+404 with `{"detail":"Workout plan not found"}`. The composite database foreign
+key also protects the write if the plan changes after validation.
+
 To run only `/health` without a local `.env` file or database configuration, omit
 `--env-file .env` from the server command. Database access is initialized lazily.
 
@@ -147,7 +163,7 @@ uv run --locked pytest
 ## Layout
 
 ```text
-app/main.py           FastAPI application, health and exercise catalog routes
+app/main.py           FastAPI routes and demo owner dependency
 app/database.py       PostgreSQL engine, request sessions, and declarative base
 app/models.py         Exercise, plan, workout, and set models
 app/schemas.py        Public HTTP request and response schemas

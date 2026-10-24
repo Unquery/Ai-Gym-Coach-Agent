@@ -24,8 +24,15 @@ single-session templates; actual sets are independent historical facts. Owner UU
 anticipate authentication without introducing a users service. A composite FK
 prevents cross-owner plan attachment. See [DATABASE.md](DATABASE.md) for the schema,
 transaction boundaries, and permissions. Docker Compose provides local storage;
-real PostgreSQL tests run in disposable schemas. Workout APIs, authentication,
-statistics, and LLM integration remain deferred.
+real PostgreSQL tests run in disposable schemas. Authentication, statistics,
+and LLM integration remain deferred.
+
+Milestone 3 exposes exercise catalog reads/creation and `POST /workouts`.
+Workout creation accepts optional plan/time fields; the server dependency uses
+the existing synthetic demo owner until authentication is implemented. Requests
+cannot choose an owner. Plan validation filters by both plan ID and owner; the
+composite foreign key remains the final consistency check. Creating a workout
+does not create performed sets. This is a local demo mode without authentication.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
