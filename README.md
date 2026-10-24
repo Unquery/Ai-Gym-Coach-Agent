@@ -101,6 +101,11 @@ The endpoint reads existing records only; it requires `DATABASE_URL`, a running
 PostgreSQL database, and applied migrations. Each request gets its own SQLAlchemy
 session; the Pydantic response schema exposes only `id` and `name`.
 
+`GET /exercises/{exercise_id}` returns one exercise with the same `id` and `name`
+fields. Use an integer ID from the catalog, for example `/exercises/1`.
+A missing exercise returns HTTP 404 with `{"detail":"Exercise not found"}`.
+A non-integer ID such as `/exercises/abc` returns HTTP 422 before the lookup runs.
+
 To run only `/health` without a local `.env` file or database configuration, omit
 `--env-file .env` from the server command. Database access is initialized lazily.
 
