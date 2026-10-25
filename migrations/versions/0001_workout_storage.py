@@ -1,7 +1,7 @@
 """Create exercise catalog, workout plans, workouts, and performed sets."""
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0001"
 down_revision = None
@@ -44,17 +44,23 @@ def upgrade() -> None:
             "position > 0", name=op.f("ck_workout_plan_exercises_positive_position")
         ),
         sa.CheckConstraint(
-            "target_sets > 0", name=op.f("ck_workout_plan_exercises_positive_target_sets")
+            "target_sets > 0",
+            name=op.f("ck_workout_plan_exercises_positive_target_sets"),
         ),
         sa.CheckConstraint(
-            "target_reps > 0", name=op.f("ck_workout_plan_exercises_positive_target_reps")
+            "target_reps > 0",
+            name=op.f("ck_workout_plan_exercises_positive_target_reps"),
         ),
         sa.ForeignKeyConstraint(
-            ["plan_id"], ["workout_plans.id"], ondelete="CASCADE",
+            ["plan_id"],
+            ["workout_plans.id"],
+            ondelete="CASCADE",
             name=op.f("fk_workout_plan_exercises_plan_id_workout_plans"),
         ),
         sa.ForeignKeyConstraint(
-            ["exercise_id"], ["exercises.id"], ondelete="RESTRICT",
+            ["exercise_id"],
+            ["exercises.id"],
+            ondelete="RESTRICT",
             name=op.f("fk_workout_plan_exercises_exercise_id_exercises"),
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_workout_plan_exercises")),
@@ -67,14 +73,23 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("user_id", sa.Uuid(), nullable=False),
         sa.Column("plan_id", sa.Integer(), nullable=True),
-        sa.Column("started_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "started_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(
-            ["plan_id", "user_id"], ["workout_plans.id", "workout_plans.user_id"],
-            ondelete="RESTRICT", name=op.f("fk_workouts_plan_id_workout_plans"),
+            ["plan_id", "user_id"],
+            ["workout_plans.id", "workout_plans.user_id"],
+            ondelete="RESTRICT",
+            name=op.f("fk_workouts_plan_id_workout_plans"),
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_workouts")),
     )
-    op.create_index("ix_workouts_user_id_started_at", "workouts", ["user_id", "started_at"])
+    op.create_index(
+        "ix_workouts_user_id_started_at", "workouts", ["user_id", "started_at"]
+    )
     op.create_table(
         "workout_sets",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -83,22 +98,32 @@ def upgrade() -> None:
         sa.Column("set_number", sa.Integer(), nullable=False),
         sa.Column("reps", sa.Integer(), nullable=False),
         sa.Column("weight_kg", sa.Numeric(7, 2), nullable=False),
-        sa.CheckConstraint("set_number > 0", name=op.f("ck_workout_sets_positive_set_number")),
+        sa.CheckConstraint(
+            "set_number > 0", name=op.f("ck_workout_sets_positive_set_number")
+        ),
         sa.CheckConstraint("reps > 0", name=op.f("ck_workout_sets_positive_reps")),
         sa.CheckConstraint(
-            "weight_kg >= 0 AND weight_kg <= 99999.99", name=op.f("ck_workout_sets_valid_weight_kg")
+            "weight_kg >= 0 AND weight_kg <= 99999.99",
+            name=op.f("ck_workout_sets_valid_weight_kg"),
         ),
         sa.ForeignKeyConstraint(
-            ["workout_id"], ["workouts.id"], ondelete="CASCADE",
+            ["workout_id"],
+            ["workouts.id"],
+            ondelete="CASCADE",
             name=op.f("fk_workout_sets_workout_id_workouts"),
         ),
         sa.ForeignKeyConstraint(
-            ["exercise_id"], ["exercises.id"], ondelete="RESTRICT",
+            ["exercise_id"],
+            ["exercises.id"],
+            ondelete="RESTRICT",
             name=op.f("fk_workout_sets_exercise_id_exercises"),
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_workout_sets")),
         sa.UniqueConstraint(
-            "workout_id", "exercise_id", "set_number", name=op.f("uq_workout_sets_workout_id")
+            "workout_id",
+            "exercise_id",
+            "set_number",
+            name=op.f("uq_workout_sets_workout_id"),
         ),
     )
     op.create_index("ix_workout_sets_exercise_id", "workout_sets", ["exercise_id"])

@@ -1,8 +1,7 @@
 import pytest
 from alembic import command
-from sqlalchemy import Engine, inspect
-
 from conftest import migration_config
+from sqlalchemy import Engine, inspect
 
 pytestmark = pytest.mark.postgres
 

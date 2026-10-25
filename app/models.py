@@ -70,7 +70,9 @@ class WorkoutPlanExercise(Base):
     plan_id: Mapped[int] = mapped_column(
         ForeignKey("workout_plans.id", ondelete="CASCADE")
     )
-    exercise_id: Mapped[int] = mapped_column(ForeignKey("exercises.id", ondelete="RESTRICT"))
+    exercise_id: Mapped[int] = mapped_column(
+        ForeignKey("exercises.id", ondelete="RESTRICT")
+    )
     position: Mapped[int]
     target_sets: Mapped[int]
     target_reps: Mapped[int]
@@ -125,8 +127,12 @@ class WorkoutSet(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    workout_id: Mapped[int] = mapped_column(ForeignKey("workouts.id", ondelete="CASCADE"))
-    exercise_id: Mapped[int] = mapped_column(ForeignKey("exercises.id", ondelete="RESTRICT"))
+    workout_id: Mapped[int] = mapped_column(
+        ForeignKey("workouts.id", ondelete="CASCADE")
+    )
+    exercise_id: Mapped[int] = mapped_column(
+        ForeignKey("exercises.id", ondelete="RESTRICT")
+    )
     set_number: Mapped[int]
     reps: Mapped[int]
     weight_kg: Mapped[Decimal] = mapped_column(Numeric(7, 2))
