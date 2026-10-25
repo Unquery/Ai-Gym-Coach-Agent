@@ -81,8 +81,8 @@ defaults/bounds as the API and rejects unknown fields. Server code supplies the
 session and owner separately; the tool returns `list[WorkoutRead]`. The HTTP
 history route and tool share an owner-filtered query in `app.queries`, with
 autoflush disabled so reads cannot flush pending changes. The tool does not
-manage transactions. Dispatch and the agent loop remain deferred, along with
-authentication and deterministic progress statistics.
+manage transactions. Authentication and deterministic progress statistics remain
+planned.
 Statistics require tested calculations before progress-analysis tools expose
 them to the model.
 
@@ -96,6 +96,21 @@ has a 30-second HTTP timeout and no automatic retries; errors propagate. A singl
 call returns the full typed response, including tool calls, without executing
 tools. Clients are closed by their callers. Tests use a mocked HTTP transport
 with synthetic keys and responses; no live LLM calls are made automatically.
+
+The first read-only workflow in `app.agent` connects the LLM client to the
+existing tool through the user-written `execute_read_only_tool` dispatcher.
+Its explicit allowlist contains only `get_recent_workouts`; typed tool metadata
+reuses the Pydantic input schema. Python validates arguments before reads and
+supplies the server-selected owner/session outside model arguments. Assistant
+tool calls and JSON results are linked by `tool_call_id`. Invalid arguments and
+unknown names return fixed error codes without raw inputs or diagnostics.
+One conversation allows at most three LLM requests and two tool requests,
+including invalid/unknown attempts. Invalid call IDs/types, incomplete responses,
+and exhausted budgets raise `AgentError`; database failures stop with a generic
+error instead of leaking diagnostics to the model. SDK errors propagate.
+The caller owns client/session lifetime and transactions. No write tools or
+HTTP endpoint are exposed. Mocked LLM tests include a real PostgreSQL ownership
+check in a disposable schema.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

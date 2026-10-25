@@ -16,9 +16,9 @@ agent and database layers must not contain frontend-specific logic. Ownership,
 validation, transaction safety, and error handling remain requirements throughout
 development; Phase 6 extends and verifies them.
 
-Milestone 4 foundations are implemented: the typed `get_recent_workouts` tool and
-the configurable OpenAI-compatible LLM client. Tool dispatch and the agent loop
-are the next implementation task.
+Milestone 4 foundations are implemented: the typed `get_recent_workouts` tool,
+the configurable OpenAI-compatible LLM client, and the first bounded read-only
+tool-calling workflow with explicit dispatch and mocked LLM tests.
 
 Deterministic progress statistics and their tests remain planned outside the
 completed Milestone 3 API scope. Implement and test them before exposing

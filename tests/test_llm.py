@@ -5,12 +5,12 @@ import os
 import httpx2
 import pytest
 from openai import AuthenticationError, DefaultHttpx2Client, RateLimitError
-from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolUnionParam
+from openai.types.chat import ChatCompletionMessageParam
 from pydantic import ValidationError
 
 from app.llm import create_chat_completion, create_llm_client
 from app.llm_config import load_llm_settings, read_required_env
-from app.tool_schemas import GetRecentWorkoutsInput
+from app.tool_schemas import get_read_only_tool_schemas
 
 
 @pytest.fixture
@@ -155,16 +155,7 @@ def test_chat_completion_preserves_tool_calls_without_executing_them(
     llm_environment: None,
 ) -> None:
     settings = load_llm_settings()
-    tools: list[ChatCompletionToolUnionParam] = [
-        {
-            "type": "function",
-            "function": {
-                "name": "get_recent_workouts",
-                "description": "Read recent workouts for the current user.",
-                "parameters": GetRecentWorkoutsInput.model_json_schema(),
-            },
-        }
-    ]
+    tools = get_read_only_tool_schemas()
     tool_calls = [
         {
             "id": "synthetic-call",

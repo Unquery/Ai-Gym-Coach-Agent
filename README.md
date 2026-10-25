@@ -5,14 +5,15 @@ An AI-powered workout logging and progress analysis assistant built as a Junior 
 **Status:** Milestone 3 complete — PostgreSQL-backed exercise and workout APIs,
 including set logging, workout details, and paginated history. Input validation
 stabilization is complete. Milestone 4 includes a typed, read-only
-`get_recent_workouts` tool and a provider-configurable LLM client.
+`get_recent_workouts` tool, a provider-configurable LLM client, and a minimal
+read-only tool-calling workflow.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The MVP will use Python, FastAPI, PostgreSQL, and safe LLM tool calling to retrieve training logs, suggest sessions, record confirmed sets, and calculate progress.
 
-The agent loop, authentication, and deterministic progress statistics remain
-planned for later work.
+Authentication, deterministic progress statistics, workout planning tools, and
+confirmed write tools remain planned for later work.
 
 ## Setup (Windows PowerShell)
 
@@ -205,7 +206,7 @@ The typed result is `list[WorkoutRead]`, with the existing `id`, `user_id`,
 ordering, and pagination run in one SELECT. The tool does not load sets or plans,
 flush pending changes, commit, or roll back the caller's transaction.
 
-This is a directly callable Python tool without a dispatcher or agent loop yet.
+This tool can be called directly or through the read-only agent workflow below.
 The caller must validate model-supplied arguments with
 `GetRecentWorkoutsInput` before execution; identity never comes from those
 arguments. Authentication remains deferred; the HTTP API still uses its demo
@@ -215,9 +216,9 @@ owner dependency.
 
 The official OpenAI Python SDK sends Chat Completions to the configured API.
 GroqCloud is the initial provider; switching providers changes configuration,
-not workout tools or database queries. This is a single-call client without an
-agent loop or automatic tool execution. FastAPI startup and `/health` do not
-load LLM settings or send LLM requests.
+not workout tools or database queries. The low-level client performs one call;
+`app.agent` implements the read-only workflow. FastAPI startup and `/health`
+do not load LLM settings or send LLM requests.
 
 Set these values in the ignored `.env` file or process environment:
 
@@ -269,6 +270,39 @@ Run the focused mocked tests without LLM credentials, Ollama, or PostgreSQL:
 uv run --locked pytest tests/test_llm.py tests/test_health.py -q
 ```
 
+## Read-only tool-calling workflow
+
+`app.agent.run_read_only_agent(user_message, *, client, settings, session, user_id)`
+uses the existing client and tools for one conversation: user request, model tool
+request, Python execution, model summary. The caller supplies the database session
+and current owner from trusted server code and owns client/session cleanup.
+The function returns the final text; no HTTP endpoint or client UI is added.
+
+Only `get_recent_workouts` is advertised through the SDK's typed function-tool
+schema, generated from `GetRecentWorkoutsInput`. The user-written dispatcher
+also enforces this explicit allowlist before parsing arguments. Arguments are
+validated before database access; an argument cannot override the server's owner.
+Successful results contain the existing workout metadata, without sets or stats.
+
+The assistant tool-call message is preserved before each `role="tool"` result,
+and every result references its original `tool_call_id`. Unknown tools and
+invalid JSON/arguments produce fixed error codes without raw input or diagnostics.
+The model can correct a failed request within the same budget. The workflow allows
+at most three LLM requests and two tool requests, including invalid/unknown ones.
+A batch exceeding the remaining tool budget is rejected before execution.
+
+Unsupported tool types, missing/repeated call IDs, empty/truncated answers, and
+exhausted limits raise `AgentError`. Database errors stop the workflow with a
+generic error; raw database diagnostics are not sent to the model. SDK errors
+propagate. The workflow does not commit or roll back the caller's transaction.
+It performs no write operations. Tests mock all LLM responses, including the
+PostgreSQL-backed owner-isolation case; no live LLM requests run automatically.
+
+```powershell
+# Include PostgreSQL ownership and tool tests in disposable schemas:
+uv run --env-file .env --locked pytest tests/test_agent.py tests/test_tools.py tests/test_llm.py tests/test_health.py -q
+```
+
 ## Test
 
 ```powershell
@@ -311,6 +345,8 @@ app/schemas.py        Public HTTP request and response schemas
 app/queries.py        Owner-scoped history query shared by the API and tool
 app/tool_schemas.py   Validated agent-tool arguments
 app/tools.py          Typed read-only agent tools
+app/tool_dispatch.py  Explicit read-only tool allowlist and execution
+app/agent.py          Bounded tool-calling workflow with server-selected ownership
 app/llm_config.py     Validated LLM environment settings and masked key
 app/llm.py            Configurable OpenAI SDK client and one completion call
 app/seed.py           Explicit synthetic demo seed
