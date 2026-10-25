@@ -73,7 +73,7 @@ def create_workout(
     if payload.plan_id is not None:
         result = session.scalar(
             select(WorkoutPlan).where(
-                payload.plan_id == WorkoutPlan.id, user_id == WorkoutPlan.user_id
+                WorkoutPlan.id == payload.plan_id, WorkoutPlan.user_id == user_id
             )
         )
         if result is None:
