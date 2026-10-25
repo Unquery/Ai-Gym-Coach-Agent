@@ -4,14 +4,14 @@ An AI-powered workout logging and progress analysis assistant built as a Junior 
 
 **Status:** Milestone 3 complete — PostgreSQL-backed exercise and workout APIs,
 including set logging, workout details, and paginated history. Input validation
-stabilization is complete. Milestone 4 has started with a typed, read-only
-`get_recent_workouts` tool.
+stabilization is complete. Milestone 4 includes a typed, read-only
+`get_recent_workouts` tool and a provider-configurable LLM client.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The MVP will use Python, FastAPI, PostgreSQL, and safe LLM tool calling to retrieve training logs, suggest sessions, record confirmed sets, and calculate progress.
 
-LLM integration, authentication, and deterministic progress statistics remain
+The agent loop, authentication, and deterministic progress statistics remain
 planned for later work.
 
 ## Setup (Windows PowerShell)
@@ -205,11 +205,69 @@ The typed result is `list[WorkoutRead]`, with the existing `id`, `user_id`,
 ordering, and pagination run in one SELECT. The tool does not load sets or plans,
 flush pending changes, commit, or roll back the caller's transaction.
 
-This is a directly callable Python tool without an LLM provider, dispatcher, or
-agent loop yet. The caller must validate model-supplied arguments with
+This is a directly callable Python tool without a dispatcher or agent loop yet.
+The caller must validate model-supplied arguments with
 `GetRecentWorkoutsInput` before execution; identity never comes from those
 arguments. Authentication remains deferred; the HTTP API still uses its demo
 owner dependency.
+
+## LLM client configuration
+
+The official OpenAI Python SDK sends Chat Completions to the configured API.
+GroqCloud is the initial provider; switching providers changes configuration,
+not workout tools or database queries. This is a single-call client without an
+agent loop or automatic tool execution. FastAPI startup and `/health` do not
+load LLM settings or send LLM requests.
+
+Set these values in the ignored `.env` file or process environment:
+
+| Variable | GroqCloud example | Local Ollama example |
+| --- | --- | --- |
+| `LLM_BASE_URL` | `https://api.groq.com/openai/v1` | `http://localhost:11434/v1/` |
+| `LLM_MODEL` | `openai/gpt-oss-20b` | `gpt-oss:20b` |
+| `LLM_API_KEY` | Your Groq API key | `ollama` (dummy value) |
+
+Only the base URL has a default: GroqCloud. Model and key must be explicitly set
+and nonblank. Models are provider-specific; select an available Groq model or
+an installed local Ollama model. Local Ollama ignores the key, but the SDK requires a nonempty
+value. Other compatible servers use the same three settings. Compatibility,
+including tool calling, depends on the server and selected model.
+See [Groq compatibility](https://console.groq.com/docs/openai) and
+[Ollama compatibility](https://docs.ollama.com/api/openai-compatibility).
+
+`load_llm_settings()` validates configuration only when called. The key is held
+as `SecretStr` and is masked in the settings representation and JSON dump; raw
+keys are passed only to the SDK. Do not print keys or request headers. `.env.example`
+contains placeholders only; real `.env` files remain ignored. The existing
+`uv run --env-file .env ...` workflow loads environment variables; application
+imports do not read `.env` files automatically.
+
+This Python example makes one real request only if explicitly run. It is not
+executed by the API or test suite:
+
+```python
+from app.llm import create_chat_completion, create_llm_client
+from app.llm_config import load_llm_settings
+
+settings = load_llm_settings()
+with create_llm_client(settings) as client:
+    completion = create_chat_completion(
+        client, settings, [{"role": "user", "content": "Say hello briefly."}]
+    )
+```
+
+`create_chat_completion` accepts optional function-tool descriptions and returns
+the full typed `ChatCompletion`, preserving `content=None` and `tool_calls`.
+It does not execute proposed calls or access PostgreSQL. Each client uses a
+30-second HTTP timeout and disables automatic retries. SDK authentication,
+rate-limit, connection, and timeout exceptions propagate to the caller. Use a
+context manager as above, or explicitly close the client when finished.
+
+Run the focused mocked tests without LLM credentials, Ollama, or PostgreSQL:
+
+```powershell
+uv run --locked pytest tests/test_llm.py tests/test_health.py -q
+```
 
 ## Test
 
@@ -253,6 +311,8 @@ app/schemas.py        Public HTTP request and response schemas
 app/queries.py        Owner-scoped history query shared by the API and tool
 app/tool_schemas.py   Validated agent-tool arguments
 app/tools.py          Typed read-only agent tools
+app/llm_config.py     Validated LLM environment settings and masked key
+app/llm.py            Configurable OpenAI SDK client and one completion call
 app/seed.py           Explicit synthetic demo seed
 migrations/           Versioned schema changes
 alembic.ini           Migration configuration (no credentials)

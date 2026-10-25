@@ -65,10 +65,21 @@ defaults/bounds as the API and rejects unknown fields. Server code supplies the
 session and owner separately; the tool returns `list[WorkoutRead]`. The HTTP
 history route and tool share an owner-filtered query in `app.queries`, with
 autoflush disabled so reads cannot flush pending changes. The tool does not
-manage transactions. LLM provider integration, dispatch, and the agent loop
-remain deferred, along with authentication and deterministic progress statistics.
+manage transactions. Dispatch and the agent loop remain deferred, along with
+authentication and deterministic progress statistics.
 Statistics require tested calculations before progress-analysis tools expose
 them to the model.
+
+The first LLM integration uses the official OpenAI Python SDK and synchronous
+Chat Completions. GroqCloud is the initial provider; `LLM_BASE_URL` defaults to
+`https://api.groq.com/openai/v1`, while `LLM_MODEL` and `LLM_API_KEY` are required.
+Settings are loaded explicitly, with `SecretStr` masking the key. Local Ollama
+uses its compatible `/v1/` URL, an installed model ID, and a dummy `ollama` key.
+No provider subclasses or provider branches exist in workout tools. The client
+has a 30-second HTTP timeout and no automatic retries; errors propagate. A single
+call returns the full typed response, including tool calls, without executing
+tools. Clients are closed by their callers. Tests use a mocked HTTP transport
+with synthetic keys and responses; no live LLM calls are made automatically.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
