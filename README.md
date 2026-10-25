@@ -2,11 +2,16 @@
 
 An AI-powered workout logging and progress analysis assistant built as a Junior AI Engineering portfolio project.
 
-**Status:** Milestone 3 in progress — exercise catalog API backed by PostgreSQL.
+**Status:** Milestone 3 complete — PostgreSQL-backed exercise and workout APIs,
+including set logging, workout details, and paginated history. Input validation
+stabilization is complete.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The MVP will use Python, FastAPI, PostgreSQL, and safe LLM tool calling to retrieve training logs, suggest sessions, record confirmed sets, and calculate progress.
+
+LLM integration, authentication, and deterministic progress statistics remain
+planned for later work.
 
 ## Setup (Windows PowerShell)
 
@@ -72,8 +77,8 @@ The named Docker volume preserves data across container restarts and
 `.env` later does not change existing database passwords.
 
 See [the storage design](docs/DATABASE.md) for tables, ownership, and transaction
-boundaries. Workout creation is available in demo mode; authentication is not
-implemented yet.
+boundaries. Exercise creation, workout/set logging, workout details, and history
+are available in local demo mode; authentication is not implemented yet.
 
 ## Run
 
@@ -117,9 +122,9 @@ PostgreSQL and is case-sensitive. A failed duplicate insert is rolled back.
 
 `POST /workouts` accepts an object with optional `plan_id` (a strict integer from
 1 to 2147483647, or `null`) and `started_at` (a timestamp with a timezone or
-`null`). Sending `{}` creates an unplanned workout; omitting the time or passing `null` uses the
-PostgreSQL time default. HTTP 201 returns `id`, `user_id`, `plan_id`, and
-`started_at` after the commit succeeds. This creates the workout record only;
+`null`). Sending `{}` creates an unplanned workout; omitting the time or passing
+`null` uses the PostgreSQL time default. HTTP 201 returns `id`, `user_id`,
+`plan_id`, and `started_at` after the commit succeeds. This creates the workout record only;
 planned exercises are not copied into performed sets.
 
 The server dependency `get_demo_user_id` supplies the existing synthetic owner
@@ -190,6 +195,10 @@ remove only that schema afterward. They cover commit/reload, rollback,
 relationships, constraints, ownership, seed repeatability, and migration
 upgrade/downgrade/model agreement. Use a dedicated local test database; the role
 needs permission to create schemas. No paid API calls are made.
+
+Test migrations initialize only disposable schemas. Passing tests do not
+initialize the application's schema; run `alembic upgrade head` with
+`DATABASE_URL` configured before normal API use, as shown in the setup steps.
 
 Without `TEST_DATABASE_URL`, PostgreSQL tests are explicitly skipped. Skipped
 tests do not validate persistence. With the variable set, connection or migration

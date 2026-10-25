@@ -2,11 +2,15 @@
 
 - [x] Phase 0 (Milestone 1) — Confirm MVP, Python/uv environment, minimal FastAPI health endpoint, README, and pytest setup.
 - [x] Phase 1 (Milestone 2) — Define workout/exercise/set/plan schema and PostgreSQL persistence; add Alembic migrations, synthetic seed, and relationship tests.
-- [ ] Phase 2 — CRUD and stats APIs; deterministic progress calculations and tests.
-- [ ] Phase 3 — LLM tool calling with read tools and a clear agent loop.
+- [x] Phase 2 (Milestone 3) — Exercise catalog reads/creation, workout/set creation, workout details and paginated history; owner filtering, input validation, and PostgreSQL-backed API tests.
+- [ ] Phase 3 (Milestone 4) — LLM tool calling with read tools and a clear agent loop.
 - [ ] Phase 4 — Write tools with explicit confirmation, validation, and user-scoped access.
 - [ ] Phase 5 — Agent evaluations, mocked-tool tests, failure handling, observability.
 - [ ] Phase 6 — Dockerized demo, optional simple interface, README, architecture diagram, interview prep, CV bullets.
+
+Deterministic progress statistics and their tests remain planned outside the
+completed Milestone 3 API scope. Implement and test them before exposing
+progress-analysis tools to the LLM.
 
 ## Definition of MVP done
 - A reviewer can run the app following README instructions.

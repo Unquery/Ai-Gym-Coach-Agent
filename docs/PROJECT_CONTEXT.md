@@ -27,7 +27,8 @@ transaction boundaries, and permissions. Docker Compose provides local storage;
 real PostgreSQL tests run in disposable schemas. Authentication, statistics,
 and LLM integration remain deferred.
 
-Milestone 3 exposes exercise catalog reads/creation and `POST /workouts`.
+Milestone 3 is complete: exercise catalog reads/creation, workout/set creation,
+workout details with performed sets, and paginated workout history.
 Workout creation accepts optional plan/time fields; the server dependency uses
 the existing synthetic demo owner until authentication is implemented. Requests
 cannot choose an owner. Plan validation filters by both plan ID and owner; the
@@ -57,6 +58,10 @@ API resource IDs use the positive PostgreSQL INTEGER range (1-2147483647),
 including exercise lookup and optional workout plan input. Exercise creation
 rejects NUL characters in Pydantic validation. Invalid values return 422 before
 executing SQL instead of surfacing database errors as 500.
+
+Milestone 4 LLM integration has not started. Authentication and deterministic
+progress statistics remain planned; statistics require tested calculations
+before progress-analysis tools can expose them to the model.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
