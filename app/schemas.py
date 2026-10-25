@@ -4,7 +4,14 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+)
 
 
 class ExerciseRead(BaseModel):
@@ -19,11 +26,18 @@ class ExerciseCreate(BaseModel):
         str, StringConstraints(min_length=1, max_length=120, strip_whitespace=True)
     ]
 
+    @field_validator("name")
+    @classmethod
+    def reject_nul(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("Name must not contain NUL characters")
+        return value
+
 
 class WorkoutCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    plan_id: Annotated[int, Field(gt=0, strict=True)] | None = None
+    plan_id: Annotated[int, Field(gt=0, le=2147483647, strict=True)] | None = None
     started_at: AwareDatetime | None = None
 
 

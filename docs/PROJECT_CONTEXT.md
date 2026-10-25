@@ -53,6 +53,11 @@ Pagination uses `limit` (default 20, range 1-100) and `offset` (default 0, range
 `started_at`/`id` ordering run before pagination in one SELECT. Empty histories
 or pages return an empty list. No client-supplied owner selection is exposed.
 
+API resource IDs use the positive PostgreSQL INTEGER range (1-2147483647),
+including exercise lookup and optional workout plan input. Exercise creation
+rejects NUL characters in Pydantic validation. Invalid values return 422 before
+executing SQL instead of surfacing database errors as 500.
+
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
 - A write operation (including workout logging/editing) needs explicit user confirmation.

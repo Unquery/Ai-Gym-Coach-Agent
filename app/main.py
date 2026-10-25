@@ -42,7 +42,8 @@ def list_exercises(session: Annotated[Session, Depends(get_session)]) -> list[Ex
 
 @app.get("/exercises/{exercise_id}", response_model=ExerciseRead)
 def get_exercise(
-    exercise_id: int, session: Annotated[Session, Depends(get_session)]
+    exercise_id: Annotated[int, Path(gt=0, le=2147483647)],
+    session: Annotated[Session, Depends(get_session)],
 ) -> Exercise:
     exercise = session.get(Exercise, exercise_id)
     if exercise is None:

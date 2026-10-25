@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -76,15 +76,27 @@ def test_missing_exercise_returns_404(exercise_client: tuple[TestClient, Mock]) 
     assert response.json() == {"detail": "Exercise not found"}
 
 
-def test_invalid_exercise_id_returns_422(exercise_client: tuple[TestClient, Mock]) -> None:
+@pytest.mark.parametrize(
+    "exercise_id, error_type",
+    [
+        ("abc", "int_parsing"),
+        ("0", "greater_than"),
+        ("-1", "greater_than"),
+        ("2147483648", "less_than_equal"),
+        (str(10**40), "less_than_equal"),
+    ],
+)
+def test_invalid_exercise_id_returns_422(
+    exercise_client: tuple[TestClient, Mock], exercise_id: str, error_type: str
+) -> None:
     client, session = exercise_client
 
-    response = client.get("/exercises/abc")
+    response = client.get(f"/exercises/{exercise_id}")
 
     assert response.status_code == 422
     error = response.json()["detail"][0]
     assert error["loc"] == ["path", "exercise_id"]
-    assert error["type"] == "int_parsing"
+    assert error["type"] == error_type
     session.get.assert_not_called()
 
 
@@ -143,7 +155,14 @@ def test_exercise_reads_postgres_by_id(
 @pytest.mark.postgres
 @pytest.mark.parametrize(
     "name",
-    ["Synthetic squat", "  Synthetic squat  ", "x" * 120, "  " + "x" * 120 + "  "],
+    [
+        "Synthetic squat",
+        "  Synthetic squat  ",
+        "x" * 120,
+        "  " + "x" * 120 + "  ",
+        "Приседания 🏋",
+        r"Synthetic\u0000squat",
+    ],
 )
 def test_create_exercise_persists_and_returns_object(
     postgres_client: TestClient, postgres_engine: Engine, name: str
@@ -211,3 +230,57 @@ def test_create_duplicate_exercise_returns_409_without_changing_catalog(
     assert next_response.status_code == 201
     with Session(postgres_engine) as reader:
         assert reader.scalar(select(func.count()).select_from(Exercise)) == 2
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("exercise_id", [1, 2147483647])
+def test_exercise_integer_boundaries_can_be_looked_up(
+    postgres_client: TestClient, postgres_engine: Engine, exercise_id: int
+) -> None:
+    with Session(postgres_engine) as writer, writer.begin():
+        writer.add(Exercise(id=exercise_id, name="Synthetic boundary exercise"))
+
+    response = postgres_client.get(f"/exercises/{exercise_id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"id": exercise_id, "name": "Synthetic boundary exercise"}
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("exercise_id", [0, -1, 2147483648, 10**40])
+def test_out_of_range_exercise_id_is_rejected_before_database_access(
+    postgres_client: TestClient, postgres_engine: Engine, exercise_id: int
+) -> None:
+    with patch.object(postgres_engine, "connect", wraps=postgres_engine.connect) as connect:
+        response = postgres_client.get(f"/exercises/{exercise_id}")
+
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["loc"] == ["path", "exercise_id"]
+        connect.assert_not_called()
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    "name",
+    [
+        "\x00Synthetic squat",
+        "Synthetic\x00squat",
+        "Synthetic squat\x00",
+        "\x00",
+        "x" * 119 + "\x00",
+    ],
+)
+def test_exercise_nul_is_rejected_before_database_access(
+    postgres_client: TestClient, postgres_engine: Engine, name: str
+) -> None:
+    with patch.object(postgres_engine, "connect", wraps=postgres_engine.connect) as connect:
+        response = postgres_client.post("/exercises", json={"name": name})
+
+        assert response.status_code == 422
+        error = response.json()["detail"][0]
+        assert error["loc"] == ["body", "name"]
+        assert error["type"] == "value_error"
+        assert "Name must not contain NUL characters" in error["msg"]
+        connect.assert_not_called()
+    with Session(postgres_engine) as reader:
+        assert reader.scalar(select(func.count()).select_from(Exercise)) == 0

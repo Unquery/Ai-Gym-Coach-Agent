@@ -136,6 +136,8 @@ def test_missing_or_other_owners_plan_returns_404_without_writing(
         {"plan_id": "abc"},
         {"plan_id": 1.5},
         {"plan_id": True},
+        {"plan_id": 2147483648},
+        {"plan_id": 10**40},
         {"started_at": "2026-01-05T10:00:00"},
         {"started_at": "not-a-date"},
         {"user_id": str(uuid4())},
@@ -146,13 +148,36 @@ def test_missing_or_other_owners_plan_returns_404_without_writing(
     ],
 )
 def test_invalid_workout_input_returns_422_without_writing(
-    workout_client: TestClient, postgres_engine: Engine, payload: object
+    workout_client: TestClient,
+    postgres_engine: Engine,
+    workout_query_log: list[str],
+    payload: object,
 ) -> None:
     response = workout_client.post("/workouts", json=payload)
 
     assert response.status_code == 422
+    assert workout_query_log == []
     with Session(postgres_engine) as reader:
         assert reader.scalar(select(func.count()).select_from(Workout)) == 0
+
+
+@pytest.mark.parametrize("plan_id", [1, 2147483647])
+def test_workout_can_reference_plan_at_integer_boundaries(
+    workout_client: TestClient, postgres_engine: Engine, plan_id: int
+) -> None:
+    with Session(postgres_engine) as writer, writer.begin():
+        writer.add(
+            WorkoutPlan(id=plan_id, user_id=DEMO_USER_ID, name="Synthetic boundary plan")
+        )
+
+    response = workout_client.post("/workouts", json={"plan_id": plan_id})
+
+    assert response.status_code == 201
+    assert response.json()["plan_id"] == plan_id
+    with Session(postgres_engine) as reader:
+        saved = reader.get(Workout, response.json()["id"])
+        assert saved is not None
+        assert saved.plan_id == plan_id
 
 
 def test_workout_owner_comes_from_dependency(

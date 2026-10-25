@@ -103,20 +103,21 @@ PostgreSQL database, and applied migrations. Each request gets its own SQLAlchem
 session; the Pydantic response schema exposes only `id` and `name`.
 
 `GET /exercises/{exercise_id}` returns one exercise with the same `id` and `name`
-fields. Use an integer ID from the catalog, for example `/exercises/1`.
+fields. Use an integer ID from 1 to 2147483647, for example `/exercises/1`.
 A missing exercise returns HTTP 404 with `{"detail":"Exercise not found"}`.
-A non-integer ID such as `/exercises/abc` returns HTTP 422 before the lookup runs.
+A non-integer or out-of-range ID returns HTTP 422 before the lookup runs.
 
 `POST /exercises` accepts `{"name":"Synthetic squat"}` and returns HTTP 201
 with the committed exercise's `id` and `name`. The name is required, must be a
-string, and is trimmed before checking its length (1–120 characters). Invalid
-input returns HTTP 422. An existing name returns HTTP 409 with
+string, and is trimmed before checking its length (1–120 characters). NUL
+characters are rejected before database access. Invalid input returns HTTP 422.
+An existing name returns HTTP 409 with
 `{"detail":"Exercise with this name already exists"}`; uniqueness is enforced by
 PostgreSQL and is case-sensitive. A failed duplicate insert is rolled back.
 
-`POST /workouts` accepts an object with optional `plan_id` (a positive integer or
-`null`) and `started_at` (a timestamp with a timezone or `null`). Sending `{}`
-creates an unplanned workout; omitting the time or passing `null` uses the
+`POST /workouts` accepts an object with optional `plan_id` (a strict integer from
+1 to 2147483647, or `null`) and `started_at` (a timestamp with a timezone or
+`null`). Sending `{}` creates an unplanned workout; omitting the time or passing `null` uses the
 PostgreSQL time default. HTTP 201 returns `id`, `user_id`, `plan_id`, and
 `started_at` after the commit succeeds. This creates the workout record only;
 planned exercises are not copied into performed sets.
