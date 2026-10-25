@@ -81,7 +81,7 @@ defaults/bounds as the API and rejects unknown fields. Server code supplies the
 session and owner separately; the tool returns `list[WorkoutRead]`. The HTTP
 history route and tool share an owner-filtered query in `app.queries`, with
 autoflush disabled so reads cannot flush pending changes. The tool does not
-manage transactions. Authentication and deterministic progress statistics remain
+manage transactions. Authentication and database-backed progress tools remain
 planned.
 Statistics require tested calculations before progress-analysis tools expose
 them to the model.
@@ -111,6 +111,19 @@ error instead of leaking diagnostics to the model. SDK errors propagate.
 The caller owns client/session lifetime and transactions. No write tools or
 HTTP endpoint are exposed. Mocked LLM tests include a real PostgreSQL ownership
 check in a disposable schema.
+
+Deterministic exercise calculations now live in `app.progress`.
+`analyze_exercise_progress(exercise_id, workouts)` accepts already loaded
+`WorkoutDetailRead` records for one owner and returns typed session metrics:
+set/repetition counts, maximum external weight, Decimal external volume in
+kg * reps, and an external-load flag. Results are ordered by UTC instant and
+workout ID. Absolute changes compare adjacent supplied sessions containing the
+exercise; first-session changes are None and missing exercise sessions are skipped.
+Zero external load preserves reps/sets and does not measure bodyweight effort.
+The function rejects inconsistent identities/duplicates and invalid selected
+set values without mutating inputs. It performs no SQL or LLM calls; future
+retrieval must enforce server-side ownership. Progress queries and tools remain
+deferred, and numeric changes alone do not establish strength improvement.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

@@ -12,7 +12,7 @@ See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`]
 
 The MVP will use Python, FastAPI, PostgreSQL, and safe LLM tool calling to retrieve training logs, suggest sessions, record confirmed sets, and calculate progress.
 
-Authentication, deterministic progress statistics, workout planning tools, and
+Authentication, database-backed progress tools, workout planning tools, and
 confirmed write tools remain planned for later work.
 
 ## Setup (Windows PowerShell)
@@ -316,6 +316,36 @@ PostgreSQL-backed owner-isolation case; no live LLM requests run automatically.
 uv run --env-file .env --locked pytest tests/test_agent.py tests/test_tools.py tests/test_llm.py tests/test_health.py -q
 ```
 
+## Deterministic exercise progress
+
+`app.progress.analyze_exercise_progress(exercise_id, workouts)` is a pure Python
+calculation over already loaded `WorkoutDetailRead` records for one user. It
+returns typed `ExerciseWorkoutProgress` rows for sessions containing that
+exercise, ordered by time (compared in UTC), then workout ID, oldest first.
+It neither queries PostgreSQL nor calls an LLM. The caller must obtain
+owner-scoped records; rejecting mixed owners does not replace authorization.
+
+Each row reports set count, total repetitions, maximum external weight,
+`external_volume_kg_reps = sum(reps * weight_kg)`, and `has_external_load`.
+Weights and volumes use Decimal arithmetic. Four `delta_*` fields subtract the
+previous supplied session containing the exercise; the first row's deltas are
+`None`. Empty histories and sessions without the exercise produce no rows.
+The calculation preserves input records and rejects invalid exercise IDs,
+mixed owners, duplicate workouts/selected set numbers, mismatched set parents,
+and nonpositive reps or negative/nonfinite weights in selected sets.
+
+Zero external weight means no recorded additional load, so reps/sets still
+count while external volume is zero and `has_external_load` is false. Body mass,
+physical effort, technique, and strength improvements are not inferred. Mixed
+weighted/unweighted sets contribute only their recorded external load. Absolute
+changes describe the supplied data; no percentage changes or medical conclusions
+are calculated. Database retrieval and LLM progress-tool integration remain
+separate future tasks.
+
+```powershell
+uv run --locked pytest tests/test_progress.py -q
+```
+
 ## Test
 
 ```powershell
@@ -360,6 +390,7 @@ app/tool_schemas.py   Validated agent-tool arguments
 app/tools.py          Typed read-only agent tools
 app/tool_dispatch.py  Explicit read-only tool allowlist and execution
 app/agent.py          Bounded tool-calling workflow with server-selected ownership
+app/progress.py       Pure exercise-session metrics and absolute changes
 app/llm_config.py     Validated LLM environment settings and masked key
 app/llm.py            Configurable OpenAI SDK client and one completion call
 app/seed.py           Explicit synthetic demo seed

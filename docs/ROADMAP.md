@@ -20,9 +20,12 @@ Milestone 4 foundations are implemented: the typed `get_recent_workouts` tool,
 the configurable OpenAI-compatible LLM client, and the first bounded read-only
 tool-calling workflow with explicit dispatch and mocked LLM tests.
 
-Deterministic progress statistics and their tests remain planned outside the
-completed Milestone 3 API scope. Implement and test them before exposing
-progress-analysis tools to the LLM.
+The first pure exercise-progress calculation is implemented: per-session metrics
+and absolute changes. Database retrieval and LLM progress tools remain planned.
+
+Deterministic progress statistics are outside the completed Milestone 3 API
+scope. Implement and test each calculation before exposing its corresponding
+progress-analysis tool to the LLM.
 
 ## Definition of backend MVP done
 
