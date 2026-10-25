@@ -1,5 +1,6 @@
 """Public HTTP request and response schemas."""
 
+from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
@@ -33,3 +34,25 @@ class WorkoutRead(BaseModel):
     user_id: UUID
     plan_id: int | None
     started_at: AwareDatetime
+
+
+class WorkoutSetCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    exercise_id: Annotated[int, Field(gt=0, le=2147483647, strict=True)]
+    set_number: Annotated[int, Field(gt=0, le=2147483647, strict=True)]
+    reps: Annotated[int, Field(gt=0, le=2147483647, strict=True)]
+    weight_kg: Annotated[
+        Decimal, Field(ge=0, lt=100000, decimal_places=2, allow_inf_nan=False)
+    ]
+
+
+class WorkoutSetRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    workout_id: int
+    exercise_id: int
+    set_number: int
+    reps: int
+    weight_kg: Decimal

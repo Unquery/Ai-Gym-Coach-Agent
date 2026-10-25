@@ -129,6 +129,24 @@ belong to the server-selected owner; missing or other owners' plans return HTTP
 404 with `{"detail":"Workout plan not found"}`. The composite database foreign
 key also protects the write if the plan changes after validation.
 
+`POST /workouts/{workout_id}/sets` adds one performed set to an existing workout.
+For example, send
+`{"exercise_id":1,"set_number":1,"reps":10,"weight_kg":"30.25"}`.
+The workout must belong to the server-selected demo owner; the exercise must
+exist in the shared catalog but does not need to appear in the workout's plan.
+HTTP 201 returns `id`, `workout_id`, `exercise_id`, `set_number`, `reps`, and
+`weight_kg` after commit. Decimal weights are serialized as strings.
+
+All four body fields are required. Exercise IDs, set numbers, and repetitions
+must be strict positive integers up to 2147483647. The workout path ID must be
+in the same range. Weight must be finite, between 0 and 99999.99 kg, with at most
+two decimal places; zero means no external load. Invalid or extra fields return
+422. Missing or other owners' workouts return 404 with `Workout not found`;
+missing exercises return 404 with `Exercise not found`. Set numbers are unique
+per workout and exercise: a duplicate returns 409 without overwriting the
+existing set. Database constraint failures are rolled back, including when a
+referenced record is deleted between validation and insertion.
+
 To run only `/health` without a local `.env` file or database configuration, omit
 `--env-file .env` from the server command. Database access is initialized lazily.
 

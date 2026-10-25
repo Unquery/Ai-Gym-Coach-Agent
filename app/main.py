@@ -3,15 +3,22 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Path
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_session
-from app.models import Exercise, Workout, WorkoutPlan
-from app.schemas import ExerciseCreate, ExerciseRead, WorkoutCreate, WorkoutRead
+from app.models import Exercise, Workout, WorkoutPlan, WorkoutSet
+from app.schemas import (
+    ExerciseCreate,
+    ExerciseRead,
+    WorkoutCreate,
+    WorkoutRead,
+    WorkoutSetCreate,
+    WorkoutSetRead,
+)
 from app.seed import DEMO_USER_ID
 
 app = FastAPI(title="AI Gym Coach")
@@ -93,3 +100,42 @@ def create_workout(
         raise
     session.refresh(workout)
     return workout
+
+
+@app.post("/workouts/{workout_id}/sets", response_model=WorkoutSetRead, status_code=201)
+def create_workout_set(
+    workout_id: Annotated[int, Path(gt=0, le=2147483647)],
+    payload: WorkoutSetCreate,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+) -> WorkoutSet:
+    workout = session.scalar(
+        select(Workout).where(Workout.id == workout_id, Workout.user_id == user_id)
+    )
+    if workout is None:
+        raise HTTPException(status_code=404, detail="Workout not found")
+    if session.get(Exercise, payload.exercise_id) is None:
+        raise HTTPException(status_code=404, detail="Exercise not found")
+
+    workout_set = WorkoutSet(workout_id=workout_id, **payload.model_dump())
+    session.add(workout_set)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        if (
+            isinstance(exc.orig, UniqueViolation)
+            and exc.orig.diag.constraint_name == "uq_workout_sets_workout_id"
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Set number already exists for this exercise in this workout",
+            ) from exc
+        if isinstance(exc.orig, ForeignKeyViolation):
+            if exc.orig.diag.constraint_name == "fk_workout_sets_workout_id_workouts":
+                raise HTTPException(status_code=404, detail="Workout not found") from exc
+            if exc.orig.diag.constraint_name == "fk_workout_sets_exercise_id_exercises":
+                raise HTTPException(status_code=404, detail="Exercise not found") from exc
+        raise
+    session.refresh(workout_set)
+    return workout_set

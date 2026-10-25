@@ -34,6 +34,13 @@ cannot choose an owner. Plan validation filters by both plan ID and owner; the
 composite foreign key remains the final consistency check. Creating a workout
 does not create performed sets. This is a local demo mode without authentication.
 
+`POST /workouts/{workout_id}/sets` records one performed set after checking the
+workout's owner and the shared exercise's existence. Required typed inputs are
+exercise ID, explicit set number, repetitions, and finite nonnegative decimal
+external load. Duplicate workout/exercise/set-number combinations return 409;
+missing or other owners' workouts and missing exercises return 404. Database
+constraint failures are rolled back; 201 is returned only after commit.
+
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
 - A write operation (including workout logging/editing) needs explicit user confirmation.
