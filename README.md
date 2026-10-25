@@ -243,6 +243,19 @@ contains placeholders only; real `.env` files remain ignored. The existing
 `uv run --env-file .env ...` workflow loads environment variables; application
 imports do not read `.env` files automatically.
 
+For local Windows smoke tests, keep `PYTHONIOENCODING=utf-8` in `.env`, as shown
+in `.env.example`. It configures Python standard streams at startup, including
+piped output, so Unicode punctuation, Cyrillic, and emoji can be printed without
+`UnicodeEncodeError`. The first live test's failure occurred in the temporary
+report script's `print(...)` with `cp1251` stdout after the agent had returned.
+See [Python's output encoding setting](https://docs.python.org/3.12/using/cmdline.html#envvar-PYTHONIOENCODING).
+Verify the launch configuration without an LLM request:
+
+```powershell
+uv run --env-file .env --locked python -c "import sys; print(sys.stdout.encoding)"
+# Expected: utf-8
+```
+
 This Python example makes one real request only if explicitly run. It is not
 executed by the API or test suite:
 
