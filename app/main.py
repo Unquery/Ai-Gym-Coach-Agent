@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_session
 from app.models import Exercise, Workout, WorkoutPlan, WorkoutSet
+from app.queries import get_workout_history
 from app.schemas import (
     ExerciseCreate,
     ExerciseRead,
@@ -172,11 +173,4 @@ def list_workouts(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0, le=2147483647)] = 0,
 ) -> list[Workout]:
-    result = session.scalars(
-        select(Workout)
-        .where(Workout.user_id == user_id)
-        .order_by(Workout.started_at.desc(), Workout.id.desc())
-        .limit(limit=limit)
-        .offset(offset=offset)
-    )
-    return list(result)
+    return get_workout_history(session, user_id=user_id, limit=limit, offset=offset)

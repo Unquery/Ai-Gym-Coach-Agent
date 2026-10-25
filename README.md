@@ -4,7 +4,8 @@ An AI-powered workout logging and progress analysis assistant built as a Junior 
 
 **Status:** Milestone 3 complete — PostgreSQL-backed exercise and workout APIs,
 including set logging, workout details, and paginated history. Input validation
-stabilization is complete.
+stabilization is complete. Milestone 4 has started with a typed, read-only
+`get_recent_workouts` tool.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
@@ -180,6 +181,36 @@ with one SELECT; the response does not load sets or plans.
 To run only `/health` without a local `.env` file or database configuration, omit
 `--env-file .env` from the server command. Database access is initialized lazily.
 
+## Read-only agent tool
+
+`app.tools.get_recent_workouts` reads the server-selected owner's history using
+the same query as `GET /workouts`. It accepts `GetRecentWorkoutsInput` from
+`app.tool_schemas`: strict integer `limit` (default 20, range 1-100) and `offset`
+(default 0, range 0-2147483647). Unknown fields, including `user_id`, are rejected.
+The input model exposes a JSON Schema through `model_json_schema()`.
+
+```python
+from app.tool_schemas import GetRecentWorkoutsInput
+from app.tools import get_recent_workouts
+
+# session and user_id are supplied by trusted server code.
+arguments = GetRecentWorkoutsInput.model_validate({"limit": 3})
+workouts = get_recent_workouts(arguments, session=session, user_id=user_id)
+result = [workout.model_dump(mode="json") for workout in workouts]
+```
+
+The typed result is `list[WorkoutRead]`, with the existing `id`, `user_id`,
+`plan_id`, and timezone-aware `started_at` fields. Empty histories/pages return
+`[]`; database errors propagate. Ownership filtering, descending time/ID
+ordering, and pagination run in one SELECT. The tool does not load sets or plans,
+flush pending changes, commit, or roll back the caller's transaction.
+
+This is a directly callable Python tool without an LLM provider, dispatcher, or
+agent loop yet. The caller must validate model-supplied arguments with
+`GetRecentWorkoutsInput` before execution; identity never comes from those
+arguments. Authentication remains deferred; the HTTP API still uses its demo
+owner dependency.
+
 ## Test
 
 ```powershell
@@ -219,6 +250,9 @@ app/main.py           FastAPI routes and demo owner dependency
 app/database.py       PostgreSQL engine, request sessions, and declarative base
 app/models.py         Exercise, plan, workout, and set models
 app/schemas.py        Public HTTP request and response schemas
+app/queries.py        Owner-scoped history query shared by the API and tool
+app/tool_schemas.py   Validated agent-tool arguments
+app/tools.py          Typed read-only agent tools
 app/seed.py           Explicit synthetic demo seed
 migrations/           Versioned schema changes
 alembic.ini           Migration configuration (no credentials)

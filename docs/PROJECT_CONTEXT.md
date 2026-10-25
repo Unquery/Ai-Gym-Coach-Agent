@@ -59,9 +59,16 @@ including exercise lookup and optional workout plan input. Exercise creation
 rejects NUL characters in Pydantic validation. Invalid values return 422 before
 executing SQL instead of surfacing database errors as 500.
 
-Milestone 4 LLM integration has not started. Authentication and deterministic
-progress statistics remain planned; statistics require tested calculations
-before progress-analysis tools can expose them to the model.
+Milestone 4 has started with the typed, read-only `get_recent_workouts` Python
+tool. `GetRecentWorkoutsInput` validates strict integer pagination with the same
+defaults/bounds as the API and rejects unknown fields. Server code supplies the
+session and owner separately; the tool returns `list[WorkoutRead]`. The HTTP
+history route and tool share an owner-filtered query in `app.queries`, with
+autoflush disabled so reads cannot flush pending changes. The tool does not
+manage transactions. LLM provider integration, dispatch, and the agent loop
+remain deferred, along with authentication and deterministic progress statistics.
+Statistics require tested calculations before progress-analysis tools expose
+them to the model.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
