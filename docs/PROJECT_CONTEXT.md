@@ -10,7 +10,23 @@ AI Gym Coach Agent: a conversational training-log and progress-analysis assistan
 4. "What did I train last time?" — retrieve workout history.
 
 ## Initial engineering direction
-Python 3.12+, FastAPI, PostgreSQL, SQLAlchemy, Pydantic, pytest, Docker Compose. A tool-calling LLM agent; optional orchestration framework only if needed. Simple API-first demo, with a minimal UI later if time allows.
+Python 3.12+, FastAPI, PostgreSQL, SQLAlchemy, Pydantic, pytest, Docker Compose. A tool-calling LLM agent; optional orchestration framework only if needed. Complete the API-first, client-independent backend MVP before starting any frontend or mobile application development.
+
+## Development priorities
+
+1. Finish the AI agent with provider-independent LLM integration.
+2. Implement read tools and a bounded agent loop.
+3. Add deterministic workout statistics and progress analysis using tested Python/SQL calculations.
+4. Add workout planning and safe write tools with explicit user confirmation.
+5. Add authentication, security hardening, error handling, and agent evaluations; maintain existing ownership and validation guarantees throughout development.
+6. Prepare Docker deployment and verify the complete backend MVP end to end.
+7. Only after backend MVP verification, start frontend development, preferably an Android application using Kotlin and Jetpack Compose.
+
+Keep frontend-specific behavior in client applications; agent and database layers
+remain client-independent. Expose backend capabilities through stable API
+contracts. See [ROADMAP.md](ROADMAP.md) for the delivery sequence.
+
+## Implementation history
 
 Milestone 1 uses Python 3.12, uv with a reproducible lockfile, FastAPI/Uvicorn, and
 pytest with HTTPX2/TestClient. The application entry point is `app.main:app`;
