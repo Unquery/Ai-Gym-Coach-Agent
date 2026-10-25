@@ -3,7 +3,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Path
+from fastapi import Depends, FastAPI, HTTPException, Path, Query
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -162,3 +162,20 @@ def get_workout(
     if result is None:
         raise HTTPException(status_code=404, detail="Workout not found")
     return result
+
+
+@app.get("/workouts", response_model=list[WorkoutRead])
+def list_workouts(
+    session: Annotated[Session, Depends(get_session)],
+    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0, le=2147483647)] = 0,
+) -> list[Workout]:
+    result = session.scalars(
+        select(Workout)
+        .where(Workout.user_id == user_id)
+        .order_by(Workout.started_at.desc(), Workout.id.desc())
+        .limit(limit=limit)
+        .offset(offset=offset)
+    )
+    return list(result)

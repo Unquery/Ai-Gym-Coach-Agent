@@ -159,6 +159,18 @@ loads the workout and its sets with two SELECTs using `selectinload`; missing
 or inaccessible workouts require only one SELECT. Plans and exercise objects
 are not loaded for this response.
 
+`GET /workouts?limit=20&offset=0` lists the server-selected demo owner's workout
+history. HTTP 200 returns an array of `id`, `user_id`, `plan_id`, and `started_at`
+objects using `WorkoutRead`. Empty histories and pages past the end return `[]`.
+The owner comes from `get_demo_user_id`; a `user_id` query parameter cannot
+select another owner's history.
+
+`limit` defaults to 20 and accepts integers from 1 to 100. `offset` defaults to
+0 and accepts integers from 0 to 2147483647. Invalid pagination parameters
+return 422. Results are ordered by `started_at` descending, then `id` descending
+to break timestamp ties. Filtering, ordering, and pagination run in PostgreSQL
+with one SELECT; the response does not load sets or plans.
+
 To run only `/health` without a local `.env` file or database configuration, omit
 `--env-file .env` from the server command. Database access is initialized lazily.
 

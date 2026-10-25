@@ -691,3 +691,180 @@ def test_set_reference_deleted_after_validation_returns_404_and_rolls_back(
     with Session(postgres_engine) as reader:
         assert reader.scalar(select(func.count()).select_from(WorkoutSet)) == 0
     assert workout_client.post("/workouts", json={}).status_code == 201
+
+
+@pytest.fixture
+def workout_history(postgres_engine: Engine) -> list[dict[str, object]]:
+    plan_id = make_plan(postgres_engine, DEMO_USER_ID)
+    with Session(postgres_engine) as writer, writer.begin():
+        owned = [
+            Workout(user_id=DEMO_USER_ID, started_at=datetime(2026, 1, day, tzinfo=UTC))
+            for day in [3, 1, 4, 4, 2]
+        ]
+        owned[0].plan_id = plan_id
+        owned[0].sets = [
+            WorkoutSet(
+                exercise=Exercise(name="Synthetic history exercise"),
+                set_number=1,
+                reps=10,
+                weight_kg=Decimal("30.25"),
+            )
+        ]
+        other_owner = uuid4()
+        writer.add_all(
+            [
+                owned[0],
+                Workout(user_id=other_owner, started_at=datetime(2026, 1, 9, tzinfo=UTC)),
+                owned[1],
+                owned[2],
+                Workout(user_id=other_owner, started_at=datetime(2026, 1, 4, tzinfo=UTC)),
+                owned[3],
+                owned[4],
+            ]
+        )
+        writer.flush()
+        return [
+            {
+                "id": row.id,
+                "user_id": str(DEMO_USER_ID),
+                "plan_id": row.plan_id,
+                "started_at": row.started_at,
+            }
+            for row in [owned[3], owned[2], owned[0], owned[4], owned[1]]
+        ]
+
+
+@pytest.mark.parametrize("other_history_exists", [False, True])
+def test_list_workouts_returns_empty_history_with_one_query(
+    workout_client: TestClient,
+    postgres_engine: Engine,
+    workout_query_log: list[str],
+    other_history_exists: bool,
+) -> None:
+    if other_history_exists:
+        with Session(postgres_engine) as writer, writer.begin():
+            writer.add(Workout(user_id=uuid4()))
+    workout_query_log.clear()
+
+    response = workout_client.get("/workouts")
+
+    assert response.status_code == 200
+    assert response.json() == []
+    assert len(workout_query_log) == 1
+    assert workout_query_log[0].lstrip().upper().startswith("SELECT")
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"limit": 1},
+        {"limit": 2, "offset": 1},
+        {"limit": 2, "offset": 2},
+        {"limit": 2, "offset": 3},
+        {"offset": 5},
+        {"offset": 2147483647},
+        {"limit": 100},
+    ],
+)
+def test_list_workouts_filters_orders_and_paginates_with_one_query(
+    workout_client: TestClient,
+    workout_history: list[dict[str, object]],
+    workout_query_log: list[str],
+    params: dict[str, int],
+) -> None:
+    workout_query_log.clear()
+
+    response = workout_client.get("/workouts", params=params)
+
+    assert response.status_code == 200
+    body = response.json()
+    for row in body:
+        row["started_at"] = datetime.fromisoformat(row["started_at"])
+    offset = params.get("offset", 0)
+    limit = params.get("limit", 20)
+    assert body == workout_history[offset : offset + limit]
+    assert len(workout_query_log) == 1
+    assert workout_query_log[0].lstrip().upper().startswith("SELECT")
+
+
+@pytest.mark.parametrize("params, expected_count", [({}, 20), ({"limit": 100}, 100)])
+def test_list_workouts_applies_default_and_maximum_page_sizes(
+    workout_client: TestClient,
+    postgres_engine: Engine,
+    params: dict[str, int],
+    expected_count: int,
+) -> None:
+    with Session(postgres_engine) as writer, writer.begin():
+        workouts = [
+            Workout(user_id=DEMO_USER_ID, started_at=datetime(2026, 1, 5, tzinfo=UTC))
+            for _ in range(105)
+        ]
+        writer.add_all(workouts)
+        writer.flush()
+        expected_ids = [row.id for row in reversed(workouts)][:expected_count]
+
+    response = workout_client.get("/workouts", params=params)
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == expected_ids
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"limit": "0"},
+        {"limit": "-1"},
+        {"limit": "101"},
+        {"limit": "abc"},
+        {"limit": "1.5"},
+        {"offset": "-1"},
+        {"offset": "abc"},
+        {"offset": "1.5"},
+        {"offset": "2147483648"},
+    ],
+)
+def test_list_invalid_pagination_returns_422_without_querying(
+    workout_client: TestClient, workout_query_log: list[str], params: dict[str, str]
+) -> None:
+    response = workout_client.get("/workouts", params=params)
+
+    assert response.status_code == 422
+    assert workout_query_log == []
+
+
+def test_list_workouts_uses_owner_dependency(
+    workout_client: TestClient, postgres_engine: Engine
+) -> None:
+    owner = uuid4()
+    with Session(postgres_engine) as writer, writer.begin():
+        workout = Workout(user_id=owner)
+        writer.add_all([workout, Workout(user_id=DEMO_USER_ID)])
+        writer.flush()
+        workout_id = workout.id
+    app.dependency_overrides[get_demo_user_id] = lambda: owner
+    try:
+        response = workout_client.get("/workouts")
+    finally:
+        del app.dependency_overrides[get_demo_user_id]
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == [workout_id]
+    assert response.json()[0]["user_id"] == str(owner)
+
+
+def test_query_parameter_cannot_change_workout_history_owner(
+    workout_client: TestClient,
+    postgres_engine: Engine,
+    workout_history: list[dict[str, object]],
+) -> None:
+    with Session(postgres_engine) as reader:
+        other_owner = reader.scalar(
+            select(Workout.user_id).where(Workout.user_id != DEMO_USER_ID).limit(1)
+        )
+        assert other_owner is not None
+
+    response = workout_client.get("/workouts", params={"user_id": str(other_owner)})
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == [row["id"] for row in workout_history]

@@ -47,6 +47,12 @@ exercise ID and set number; empty workouts return an empty list. `selectinload`
 loads the collection explicitly in a second SELECT, avoiding serialization-time
 queries. Missing or other owners' workouts return 404 after a single SELECT.
 
+`GET /workouts` lists the server-selected owner's history using `WorkoutRead`.
+Pagination uses `limit` (default 20, range 1-100) and `offset` (default 0, range
+0-2147483647); invalid values return 422. The owner filter and descending
+`started_at`/`id` ordering run before pagination in one SELECT. Empty histories
+or pages return an empty list. No client-supplied owner selection is exposed.
+
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
 - A write operation (including workout logging/editing) needs explicit user confirmation.
