@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, delete, event, func, select
+from sqlalchemy import Connection, Engine, delete, event, func, select
 from sqlalchemy.orm import Session
 
 from app import database
@@ -201,6 +201,179 @@ def test_plan_deleted_after_validation_returns_404_and_rolls_back(
 
 
 @pytest.fixture
+def workout_query_log(postgres_engine: Engine) -> Iterator[list[str]]:
+    statements: list[str] = []
+
+    def record_query(
+        _connection: Connection,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(postgres_engine, "before_cursor_execute", record_query)
+    try:
+        yield statements
+    finally:
+        event.remove(postgres_engine, "before_cursor_execute", record_query)
+
+
+@pytest.mark.parametrize("with_plan", [False, True])
+@pytest.mark.parametrize("with_sets", [False, True])
+def test_get_workout_returns_its_ordered_sets_with_two_queries(
+    workout_client: TestClient,
+    postgres_engine: Engine,
+    set_target: tuple[int, int],
+    workout_query_log: list[str],
+    with_plan: bool,
+    with_sets: bool,
+) -> None:
+    workout_id, exercise_id = set_target
+    plan_id = make_plan(postgres_engine, DEMO_USER_ID) if with_plan else None
+    started_at = datetime(2026, 1, 5, 10, tzinfo=UTC)
+    with Session(postgres_engine) as writer, writer.begin():
+        workout = writer.get(Workout, workout_id)
+        assert workout is not None
+        workout.plan_id = plan_id
+        workout.started_at = started_at
+        performed_sets: list[WorkoutSet] = []
+        if with_sets:
+            other_exercise = Exercise(name="Synthetic bench press")
+            writer.add(other_exercise)
+            writer.flush()
+            performed_sets = [
+                WorkoutSet(
+                    workout_id=workout_id,
+                    exercise_id=other_exercise.id,
+                    set_number=1,
+                    reps=5,
+                    weight_kg=Decimal("0.00"),
+                ),
+                WorkoutSet(
+                    workout_id=workout_id,
+                    exercise_id=exercise_id,
+                    set_number=2,
+                    reps=8,
+                    weight_kg=Decimal("30.25"),
+                ),
+                WorkoutSet(
+                    workout_id=workout_id,
+                    exercise_id=exercise_id,
+                    set_number=1,
+                    reps=10,
+                    weight_kg=Decimal("30.25"),
+                ),
+            ]
+            writer.add_all(performed_sets)
+        writer.add(
+            Workout(
+                user_id=DEMO_USER_ID,
+                sets=[
+                    WorkoutSet(
+                        exercise_id=exercise_id,
+                        set_number=1,
+                        reps=99,
+                        weight_kg=Decimal("77.00"),
+                    )
+                ],
+            )
+        )
+        writer.flush()
+        expected_sets = [
+            {
+                "id": row.id,
+                "workout_id": workout_id,
+                "exercise_id": row.exercise_id,
+                "set_number": row.set_number,
+                "reps": row.reps,
+                "weight_kg": str(row.weight_kg),
+            }
+            for row in sorted(
+                performed_sets, key=lambda row: (row.exercise_id, row.set_number)
+            )
+        ]
+    workout_query_log.clear()
+
+    response = workout_client.get(f"/workouts/{workout_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"id", "user_id", "plan_id", "started_at", "sets"}
+    assert body["id"] == workout_id
+    assert body["user_id"] == str(DEMO_USER_ID)
+    assert body["plan_id"] == plan_id
+    assert datetime.fromisoformat(body["started_at"]) == started_at
+    assert body["sets"] == expected_sets
+    assert len(workout_query_log) == 2
+    assert all(sql.lstrip().upper().startswith("SELECT") for sql in workout_query_log)
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_get_missing_or_other_owners_workout_returns_404_with_one_query(
+    workout_client: TestClient,
+    postgres_engine: Engine,
+    set_target: tuple[int, int],
+    workout_query_log: list[str],
+    exists: bool,
+) -> None:
+    workout_id = set_target[0] if exists else 999
+    if exists:
+        with Session(postgres_engine) as writer, writer.begin():
+            workout = writer.get(Workout, workout_id)
+            assert workout is not None
+            workout.user_id = uuid4()
+            workout.sets.append(
+                WorkoutSet(
+                    exercise_id=set_target[1],
+                    set_number=1,
+                    reps=10,
+                    weight_kg=Decimal("30.25"),
+                )
+            )
+    workout_query_log.clear()
+
+    response = workout_client.get(f"/workouts/{workout_id}")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Workout not found"}
+    assert len(workout_query_log) == 1
+    assert workout_query_log[0].lstrip().upper().startswith("SELECT")
+
+
+@pytest.mark.parametrize("workout_id", ["abc", "1.5", "0", "-1", "2147483648"])
+def test_get_invalid_workout_id_returns_422_without_querying(
+    workout_client: TestClient, workout_query_log: list[str], workout_id: str
+) -> None:
+    response = workout_client.get(f"/workouts/{workout_id}")
+
+    assert response.status_code == 422
+    assert workout_query_log == []
+
+
+def test_get_workout_uses_owner_dependency(
+    workout_client: TestClient,
+    postgres_engine: Engine,
+    set_target: tuple[int, int],
+) -> None:
+    owner = uuid4()
+    with Session(postgres_engine) as writer, writer.begin():
+        workout = writer.get(Workout, set_target[0])
+        assert workout is not None
+        workout.user_id = owner
+    app.dependency_overrides[get_demo_user_id] = lambda: owner
+    try:
+        response = workout_client.get(f"/workouts/{set_target[0]}")
+    finally:
+        del app.dependency_overrides[get_demo_user_id]
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == str(owner)
+
+
+@pytest.fixture
 def set_target(postgres_engine: Engine) -> tuple[int, int]:
     with Session(postgres_engine) as writer, writer.begin():
         workout = Workout(user_id=DEMO_USER_ID)
@@ -213,7 +386,12 @@ def set_target(postgres_engine: Engine) -> tuple[int, int]:
 
 @pytest.fixture
 def set_payload(set_target: tuple[int, int]) -> dict[str, object]:
-    return dict(exercise_id=set_target[1], set_number=1, reps=10, weight_kg="30.25")
+    return {
+        "exercise_id": set_target[1],
+        "set_number": 1,
+        "reps": 10,
+        "weight_kg": "30.25",
+    }
 
 
 @pytest.mark.parametrize("weight", ["30.25", 0, "99999.99"])

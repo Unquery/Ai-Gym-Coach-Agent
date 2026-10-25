@@ -147,6 +147,18 @@ per workout and exercise: a duplicate returns 409 without overwriting the
 existing set. Database constraint failures are rolled back, including when a
 referenced record is deleted between validation and insertion.
 
+`GET /workouts/{workout_id}` returns HTTP 200 with `id`, `user_id`, `plan_id`,
+`started_at`, and `sets`. Each set has the same fields as the set-creation
+response; decimal weights remain strings. Sets are ordered by `exercise_id`,
+then `set_number`. A workout without sets returns `"sets": []`.
+
+The workout must belong to the server-selected demo owner. Missing or other
+owners' workouts return 404 with `{"detail":"Workout not found"}`. The path ID
+must be an integer from 1 to 2147483647; invalid IDs return 422. The endpoint
+loads the workout and its sets with two SELECTs using `selectinload`; missing
+or inaccessible workouts require only one SELECT. Plans and exercise objects
+are not loaded for this response.
+
 To run only `/health` without a local `.env` file or database configuration, omit
 `--env-file .env` from the server command. Database access is initialized lazily.
 

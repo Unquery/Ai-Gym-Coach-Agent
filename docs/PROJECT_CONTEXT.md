@@ -41,6 +41,12 @@ external load. Duplicate workout/exercise/set-number combinations return 409;
 missing or other owners' workouts and missing exercises return 404. Database
 constraint failures are rolled back; 201 is returned only after commit.
 
+`GET /workouts/{workout_id}` returns an owner's workout and its performed sets,
+reusing the existing workout and set response fields. Sets are ordered by
+exercise ID and set number; empty workouts return an empty list. `selectinload`
+loads the collection explicitly in a second SELECT, avoiding serialization-time
+queries. Missing or other owners' workouts return 404 after a single SELECT.
+
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
 - A write operation (including workout logging/editing) needs explicit user confirmation.

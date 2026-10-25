@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, Path
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_session
 from app.models import Exercise, Workout, WorkoutPlan, WorkoutSet
@@ -15,6 +15,7 @@ from app.schemas import (
     ExerciseCreate,
     ExerciseRead,
     WorkoutCreate,
+    WorkoutDetailRead,
     WorkoutRead,
     WorkoutSetCreate,
     WorkoutSetRead,
@@ -96,7 +97,9 @@ def create_workout(
             isinstance(exc.orig, ForeignKeyViolation)
             and exc.orig.diag.constraint_name == "fk_workouts_plan_id_workout_plans"
         ):
-            raise HTTPException(status_code=404, detail="Workout plan not found") from exc
+            raise HTTPException(
+                status_code=404, detail="Workout plan not found"
+            ) from exc
         raise
     session.refresh(workout)
     return workout
@@ -133,9 +136,29 @@ def create_workout_set(
             ) from exc
         if isinstance(exc.orig, ForeignKeyViolation):
             if exc.orig.diag.constraint_name == "fk_workout_sets_workout_id_workouts":
-                raise HTTPException(status_code=404, detail="Workout not found") from exc
+                raise HTTPException(
+                    status_code=404, detail="Workout not found"
+                ) from exc
             if exc.orig.diag.constraint_name == "fk_workout_sets_exercise_id_exercises":
-                raise HTTPException(status_code=404, detail="Exercise not found") from exc
+                raise HTTPException(
+                    status_code=404, detail="Exercise not found"
+                ) from exc
         raise
     session.refresh(workout_set)
     return workout_set
+
+
+@app.get("/workouts/{workout_id}", response_model=WorkoutDetailRead)
+def get_workout(
+    workout_id: Annotated[int, Path(gt=0, le=2147483647)],
+    session: Annotated[Session, Depends(get_session)],
+    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+) -> Workout:
+    result = session.scalar(
+        select(Workout)
+        .where(Workout.id == workout_id, Workout.user_id == user_id)
+        .options(selectinload(Workout.sets))
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workout not found")
+    return result

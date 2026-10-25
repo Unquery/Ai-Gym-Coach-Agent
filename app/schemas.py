@@ -56,3 +56,7 @@ class WorkoutSetRead(BaseModel):
     set_number: int
     reps: int
     weight_kg: Decimal
+
+
+class WorkoutDetailRead(WorkoutRead):
+    sets: list[WorkoutSetRead]
