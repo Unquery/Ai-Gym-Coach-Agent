@@ -50,6 +50,7 @@ def test_create_workout_without_plan_uses_database_time(
 ) -> None:
     with postgres_engine.connect() as connection:
         before = connection.scalar(select(func.now()))
+        assert before is not None
 
     response = workout_client.post("/workouts", json=payload)
 
@@ -68,7 +69,9 @@ def test_create_workout_without_plan_uses_database_time(
         assert saved.plan_id is None
         assert saved.sets == []
         assert saved.started_at == started_at
-        assert before <= saved.started_at <= reader.scalar(select(func.now()))
+        after = reader.scalar(select(func.now()))
+        assert after is not None
+        assert before <= saved.started_at <= after
 
 
 def test_create_workout_preserves_explicit_time(
@@ -83,7 +86,9 @@ def test_create_workout_preserves_explicit_time(
     expected = datetime(2026, 1, 5, 10, tzinfo=UTC)
     assert datetime.fromisoformat(body["started_at"]) == expected
     with Session(postgres_engine) as reader:
-        assert reader.get(Workout, body["id"]).started_at == expected
+        saved = reader.get(Workout, body["id"])
+        assert saved is not None
+        assert saved.started_at == expected
 
 
 def test_create_workout_with_owned_plan_does_not_create_performed_sets(
@@ -99,8 +104,10 @@ def test_create_workout_with_owned_plan_does_not_create_performed_sets(
     assert body["user_id"] == str(DEMO_USER_ID)
     with Session(postgres_engine) as reader:
         saved = reader.get(Workout, body["id"])
+        assert saved is not None
         assert saved.plan_id == plan_id
         assert saved.user_id == DEMO_USER_ID
+        assert saved.plan is not None
         assert saved.plan.id == plan_id
         assert len(saved.plan.exercises) == 1
         assert saved.sets == []
@@ -163,6 +170,7 @@ def test_workout_owner_comes_from_dependency(
     assert body["user_id"] == str(owner)
     with Session(postgres_engine) as reader:
         saved = reader.get(Workout, body["id"])
+        assert saved is not None
         assert saved.user_id == owner
         assert saved.plan_id == plan_id
 
