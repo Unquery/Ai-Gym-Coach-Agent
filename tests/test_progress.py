@@ -18,9 +18,7 @@ from app.schemas import WorkoutDetailRead, WorkoutSetRead
         ([(3, "0.10")], "0.30"),
     ],
 )
-def test_calculate_external_volume(
-    rows: list[tuple[int, str]], expected: str
-) -> None:
+def test_calculate_external_volume(rows: list[tuple[int, str]], expected: str) -> None:
     sets = [
         WorkoutSetRead(
             id=number,
@@ -99,9 +97,11 @@ def make_workout(
 
 @pytest.mark.parametrize("history", ["empty", "no_sets", "other_exercise"])
 def test_progress_returns_empty_without_the_selected_exercise(history: str) -> None:
-    workouts = [] if history == "empty" else [
-        make_workout(1, 1, [] if history == "no_sets" else [(2, 10, "20.00")])
-    ]
+    workouts = (
+        []
+        if history == "empty"
+        else [make_workout(1, 1, [] if history == "no_sets" else [(2, 10, "20.00")])]
+    )
     assert analyze_exercise_progress(1, workouts) == []
 
 
@@ -125,19 +125,27 @@ def test_progress_filters_orders_and_compares_matching_sessions() -> None:
     assert [row.set_count for row in result] == [2, 2, 1]
     assert [row.total_reps for row in result] == [18, 22, 5]
     assert [row.max_external_weight_kg for row in result] == [
-        Decimal("25.00"), Decimal("25.00"), Decimal("10.00")
+        Decimal("25.00"),
+        Decimal("25.00"),
+        Decimal("10.00"),
     ]
     assert [row.external_volume_kg_reps for row in result] == [
-        Decimal("400.00"), Decimal("490.00"), Decimal("50.00")
+        Decimal("400.00"),
+        Decimal("490.00"),
+        Decimal("50.00"),
     ]
     assert all(row.has_external_load for row in result)
     assert [row.delta_set_count for row in result] == [None, 0, -1]
     assert [row.delta_total_reps for row in result] == [None, 4, -17]
     assert [row.delta_max_external_weight_kg for row in result] == [
-        None, Decimal("0.00"), Decimal("-15.00")
+        None,
+        Decimal("0.00"),
+        Decimal("-15.00"),
     ]
     assert [row.delta_external_volume_kg_reps for row in result] == [
-        None, Decimal("90.00"), Decimal("-440.00")
+        None,
+        Decimal("90.00"),
+        Decimal("-440.00"),
     ]
     assert [workout.model_dump() for workout in workouts] == before
     serialized = result[0].model_dump(mode="json")
@@ -146,20 +154,27 @@ def test_progress_filters_orders_and_compares_matching_sessions() -> None:
 
 
 def test_progress_preserves_bodyweight_reps_and_tracks_only_external_load() -> None:
-    result = analyze_exercise_progress(1, [
-        make_workout(1, 1, [(1, 6, "0.00"), (1, 5, "0.00")]),
-        make_workout(2, 2, [(1, 8, "0.00"), (1, 7, "0.00")]),
-        make_workout(3, 3, [(1, 6, "0.00"), (1, 8, "10.00")]),
-    ])
+    result = analyze_exercise_progress(
+        1,
+        [
+            make_workout(1, 1, [(1, 6, "0.00"), (1, 5, "0.00")]),
+            make_workout(2, 2, [(1, 8, "0.00"), (1, 7, "0.00")]),
+            make_workout(3, 3, [(1, 6, "0.00"), (1, 8, "10.00")]),
+        ],
+    )
 
     assert [row.total_reps for row in result] == [11, 15, 14]
     assert [row.set_count for row in result] == [2, 2, 2]
     assert [row.has_external_load for row in result] == [False, False, True]
     assert [row.max_external_weight_kg for row in result] == [
-        Decimal("0.00"), Decimal("0.00"), Decimal("10.00")
+        Decimal("0.00"),
+        Decimal("0.00"),
+        Decimal("10.00"),
     ]
     assert [row.external_volume_kg_reps for row in result] == [
-        Decimal("0.00"), Decimal("0.00"), Decimal("80.00")
+        Decimal("0.00"),
+        Decimal("0.00"),
+        Decimal("80.00"),
     ]
     assert result[1].delta_total_reps == 4
     assert result[1].delta_external_volume_kg_reps == Decimal("0.00")
@@ -212,8 +227,35 @@ def test_progress_rejects_inconsistent_records(problem: str, message: str) -> No
 def test_progress_validates_selected_sets_before_aggregating() -> None:
     workout = make_workout(1, 1, [(1, 10, "20.00")])
     # NaN would make max/comparison fail if the volume helper's guards were skipped.
-    workout.sets.append(workout.sets[0].model_copy(
-        update={"id": 2, "set_number": 2, "weight_kg": Decimal("NaN")}
-    ))
+    workout.sets.append(
+        workout.sets[0].model_copy(
+            update={"id": 2, "set_number": 2, "weight_kg": Decimal("NaN")}
+        )
+    )
     with pytest.raises(ValueError, match="Weight must be finite and nonnegative"):
         analyze_exercise_progress(1, [workout])
+
+
+def test_progress_tracks_transition_to_zero_external_load() -> None:
+    first = make_workout(1, 1, [(1, 6, "10")])
+    second = make_workout(2, 2, [(1, 8, "0")])
+
+    result = analyze_exercise_progress(1, [first, second])
+
+    assert len(result) == 2
+    assert [row.set_count for row in result] == [1, 1]
+    assert [row.max_external_weight_kg for row in result] == [
+        Decimal(10),
+        Decimal(0),
+    ]
+    assert [row.external_volume_kg_reps for row in result] == [
+        Decimal(60),
+        Decimal(0),
+    ]
+    assert [row.has_external_load for row in result] == [True, False]
+    assert result[0].total_reps == 6
+    assert result[1].total_reps == 8
+    assert result[1].delta_total_reps == 2
+    assert result[1].delta_set_count == 0
+    assert result[1].delta_max_external_weight_kg == Decimal(-10)
+    assert result[1].delta_external_volume_kg_reps == Decimal(-60)

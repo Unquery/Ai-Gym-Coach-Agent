@@ -21,9 +21,7 @@ def llm_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize("value", [None, "", "   ", " test-model "])
-def test_read_required_env(
-    monkeypatch: pytest.MonkeyPatch, value: str | None
-) -> None:
+def test_read_required_env(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
     if value is None:
         monkeypatch.delenv("LLM_MODEL", raising=False)
     else:
@@ -129,7 +127,8 @@ def test_chat_completion_uses_configured_provider(
     def respond(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
         return httpx2.Response(
-            200, json=completion_body({"role": "assistant", "content": "Synthetic reply"})
+            200,
+            json=completion_body({"role": "assistant", "content": "Synthetic reply"}),
         )
 
     transport = DefaultHttpx2Client(transport=httpx2.MockTransport(respond))
@@ -192,7 +191,9 @@ def test_chat_completion_preserves_tool_calls_without_executing_them(
     message = result.choices[0].message
     assert message.content is None
     assert message.tool_calls is not None
-    assert [call.model_dump(exclude_none=True) for call in message.tool_calls] == tool_calls
+    assert [
+        call.model_dump(exclude_none=True) for call in message.tool_calls
+    ] == tool_calls
 
 
 @pytest.mark.parametrize(

@@ -27,7 +27,7 @@ def calculate_external_volume(
     sets: Sequence[WorkoutSetRead],
 ) -> Decimal:
     """Sum external kg * reps; zero external load does not mean zero effort."""
-    volume: Decimal = Decimal("0")
+    volume: Decimal = Decimal(0)
     for workout_set in sets:
         if workout_set.reps <= 0:
             raise ValueError("Reps must be positive")
