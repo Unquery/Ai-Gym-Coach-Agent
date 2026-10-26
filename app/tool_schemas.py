@@ -1,11 +1,7 @@
-from typing import Annotated
+from typing import Annotated, Self
 
 from openai.types.chat import ChatCompletionToolUnionParam
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-)
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 
 class GetRecentWorkoutsInput(BaseModel):
@@ -13,6 +9,22 @@ class GetRecentWorkoutsInput(BaseModel):
 
     limit: Annotated[int, Field(gt=0, le=100, strict=True)] = 20
     offset: Annotated[int, Field(ge=0, le=2147483647, strict=True)] = 0
+
+
+class GetExerciseProgressInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    exercise_id: Annotated[int, Field(gt=0, le=2147483647, strict=True)]
+    start_at: AwareDatetime | None = None
+    end_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> Self:
+        if self.start_at is None or self.end_at is None:
+            return self
+        if self.start_at >= self.end_at:
+            raise ValueError("start_at must be earlier than end_at")
+        return self
 
 
 def get_read_only_tool_schemas() -> list[ChatCompletionToolUnionParam]:
@@ -29,5 +41,20 @@ def get_read_only_tool_schemas() -> list[ChatCompletionToolUnionParam]:
                 ),
                 "parameters": GetRecentWorkoutsInput.model_json_schema(),
             },
-        }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_exercise_progress",
+                "description": (
+                    "Read deterministic statistics for one exercise belonging to the "
+                    "current user's workout history. Returns per-session reps, sets, "
+                    "external weight/volume and absolute changes. Optional timezone-aware "
+                    "start_at is inclusive and end_at is exclusive, filtering workout "
+                    "start times. Missing bounds are unrestricted. Zero external load "
+                    "does not mean zero physical effort."
+                ),
+                "parameters": GetExerciseProgressInput.model_json_schema(),
+            },
+        },
     ]

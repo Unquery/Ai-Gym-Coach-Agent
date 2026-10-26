@@ -1,6 +1,7 @@
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 from unittest.mock import Mock
 from uuid import uuid4
@@ -15,9 +16,11 @@ from sqlalchemy.orm import Session
 from app.agent import AgentError, run_read_only_agent
 from app.llm import create_llm_client
 from app.llm_config import LLMSettings
-from app.models import Workout
+from app.models import Exercise, Workout, WorkoutSet
+from app.progress import ExerciseWorkoutProgress
 from app.schemas import WorkoutRead
-from app.tool_schemas import GetRecentWorkoutsInput
+from app.tool_schemas import GetExerciseProgressInput, GetRecentWorkoutsInput
+from app.tools import ExerciseProgressResult
 
 MockedLLM = tuple[
     OpenAI,
@@ -144,6 +147,14 @@ def test_agent_sends_typed_tool_result_with_matching_call_id(
         ("get_recent_workouts", '{"limit":0}', "invalid_arguments"),
         ("get_recent_workouts", '{"limit":true}', "invalid_arguments"),
         ("get_recent_workouts", '{"user_id":"untrusted-owner"}', "invalid_arguments"),
+        ("get_exercise_progress", "not-json", "invalid_arguments"),
+        ("get_exercise_progress", '{"exercise_id":true}', "invalid_arguments"),
+        ("get_exercise_progress", '{"exercise_id":1,"user_id":"untrusted-owner"}', "invalid_arguments"),
+        (
+            "get_exercise_progress",
+            '{"exercise_id":1,"start_at":"2026-01-02T00:00:00Z","end_at":"2026-01-01T00:00:00Z"}',
+            "invalid_arguments",
+        ),
     ],
 )
 def test_agent_returns_safe_tool_errors_without_database_access(
@@ -156,6 +167,7 @@ def test_agent_returns_safe_tool_errors_without_database_access(
     client, settings, requests, responses = mocked_llm
     reader = Mock(side_effect=AssertionError("Invalid calls must not read the database"))
     monkeypatch.setattr("app.tool_dispatch.get_recent_workouts", reader)
+    monkeypatch.setattr("app.tool_dispatch.get_exercise_progress", reader)
     responses.extend([
         completion(calls=[tool_call(arguments, name=name)]),
         completion("The requested history is unavailable."),
@@ -291,16 +303,18 @@ def test_agent_rejects_missing_or_truncated_answers(
     assert len(requests) == 1
 
 
+@pytest.mark.parametrize("tool_name", ["get_recent_workouts", "get_exercise_progress"])
 def test_agent_does_not_send_database_errors_to_the_model(
-    mocked_llm: MockedLLM, monkeypatch: pytest.MonkeyPatch
+    mocked_llm: MockedLLM, monkeypatch: pytest.MonkeyPatch, tool_name: str
 ) -> None:
     client, settings, requests, responses = mocked_llm
     monkeypatch.setattr(
-        "app.tool_dispatch.get_recent_workouts",
+        f"app.tool_dispatch.{tool_name}",
         Mock(side_effect=SQLAlchemyError("Sensitive database diagnostic")),
     )
-    responses.append(completion(calls=[tool_call()]))
-    with pytest.raises(AgentError, match="^Workout history could not be read$"):
+    arguments = '{"exercise_id":1}' if tool_name == "get_exercise_progress" else "{}"
+    responses.append(completion(calls=[tool_call(arguments, name=tool_name)]))
+    with pytest.raises(AgentError, match="^Workout data could not be read$"):
         run_read_only_agent(
             "Show history", client=client, settings=settings,
             session=Mock(spec=Session), user_id=uuid4()
@@ -329,3 +343,94 @@ def test_agent_reads_only_the_server_selected_owners_history(
     ) == "Synthetic history summary"
     assert len(requests) == 2
     assert json.loads(requests[1]["messages"][-1]["content"]) == [expected]
+
+
+@pytest.mark.parametrize("status", ["exercise_not_found", "no_history", "insufficient_history", "ok"])
+def test_agent_passes_structured_progress_results_and_schema_to_the_model(
+    mocked_llm: MockedLLM, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    client, settings, requests, responses = mocked_llm
+    owner = uuid4()
+    session = Mock(spec=Session)
+    single = ExerciseWorkoutProgress(
+        workout_id=1,
+        started_at=datetime(2026, 1, 2, tzinfo=UTC),
+        set_count=1, total_reps=8,
+        max_external_weight_kg=Decimal("0.00"),
+        external_volume_kg_reps=Decimal("0.00"), has_external_load=False,
+    )
+    rows = [] if status in {"exercise_not_found", "no_history"} else [single]
+    if status == "ok":
+        rows.append(single.model_copy(update={
+            "workout_id": 2, "started_at": datetime(2026, 1, 3, tzinfo=UTC),
+            "delta_total_reps": 0, "delta_external_volume_kg_reps": Decimal("0.00"),
+        }))
+    expected = ExerciseProgressResult(exercise_id=1, status=status, sessions=rows)
+    reader = Mock(return_value=expected)
+    monkeypatch.setattr("app.tool_dispatch.get_exercise_progress", reader)
+    call = tool_call(
+        '{"exercise_id":1,"start_at":"2026-01-01T00:00:00Z"}',
+        name="get_exercise_progress", call_id="progress_1",
+    )
+    responses.extend([completion(calls=[call]), completion("Synthetic progress summary")])
+
+    assert run_read_only_agent(
+        "Show exercise 1 progress", client=client, settings=settings,
+        session=session, user_id=owner,
+    ) == "Synthetic progress summary"
+    reader.assert_called_once_with(
+        GetExerciseProgressInput(exercise_id=1, start_at="2026-01-01T00:00:00Z"),
+        session=session, user_id=owner,
+    )
+    assert len(requests) == 2
+    tools = {tool["function"]["name"]: tool["function"] for tool in requests[0]["tools"]}
+    assert set(tools) == {"get_recent_workouts", "get_exercise_progress"}
+    assert tools["get_exercise_progress"]["parameters"] == GetExerciseProgressInput.model_json_schema()
+    assert "user_id" not in tools["get_exercise_progress"]["parameters"]["properties"]
+    messages = requests[1]["messages"]
+    assert "Report only statistics returned by that tool" in messages[0]["content"]
+    assert "Zero external weight/volume does not mean zero effort" in messages[0]["content"]
+    assert messages[-1]["tool_call_id"] == "progress_1"
+    assert json.loads(messages[-1]["content"]) == expected.model_dump(mode="json")
+
+
+@pytest.mark.postgres
+def test_agent_reads_progress_from_postgres_for_the_server_selected_owner(
+    mocked_llm: MockedLLM, session: Session
+) -> None:
+    client, settings, requests, responses = mocked_llm
+    owner = uuid4()
+    exercise = Exercise(name="Synthetic agent progress exercise")
+    session.add_all([
+        Workout(
+            user_id=workout_owner,
+            started_at=datetime(2026, 1, day, tzinfo=UTC),
+            sets=[WorkoutSet(
+                exercise=exercise, set_number=1, reps=reps, weight_kg=Decimal(weight)
+            )],
+        )
+        for workout_owner, day, reps, weight in [
+            (owner, 1, 6, 10), (owner, 2, 8, 0), (uuid4(), 2, 999, 100)
+        ]
+    ])
+    session.commit()
+    exercise_id = exercise.id
+    session.expunge_all()
+    responses.extend([
+        completion(calls=[tool_call(
+            json.dumps({"exercise_id": exercise_id}), name="get_exercise_progress",
+        )]),
+        completion("Synthetic progress summary"),
+    ])
+
+    assert run_read_only_agent(
+        "Show exercise progress", client=client, settings=settings,
+        session=session, user_id=owner,
+    ) == "Synthetic progress summary"
+    assert len(requests) == 2
+    payload = json.loads(requests[1]["messages"][-1]["content"])
+    assert payload["exercise_id"] == exercise_id
+    assert payload["status"] == "ok"
+    assert [row["total_reps"] for row in payload["sessions"]] == [6, 8]
+    assert [row["external_volume_kg_reps"] for row in payload["sessions"]] == ["60.00", "0.00"]
+    assert payload["sessions"][1]["delta_external_volume_kg_reps"] == "-60.00"

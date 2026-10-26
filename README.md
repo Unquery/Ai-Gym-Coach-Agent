@@ -4,16 +4,16 @@ An AI-powered workout logging and progress analysis assistant built as a Junior 
 
 **Status:** Milestone 3 complete — PostgreSQL-backed exercise and workout APIs,
 including set logging, workout details, and paginated history. Input validation
-stabilization is complete. Milestone 4 includes a typed, read-only
-`get_recent_workouts` tool, a provider-configurable LLM client, and a minimal
-read-only tool-calling workflow.
+stabilization is complete. Milestone 4 includes typed, read-only
+`get_recent_workouts` and `get_exercise_progress` tools, a provider-configurable
+LLM client, and a minimal read-only tool-calling workflow.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 The MVP will use Python, FastAPI, PostgreSQL, and safe LLM tool calling to retrieve training logs, suggest sessions, record confirmed sets, and calculate progress.
 
-Authentication, database-backed progress tools, workout planning tools, and
-confirmed write tools remain planned for later work.
+Authentication, workout planning tools, and confirmed write tools remain planned
+for later work.
 
 ## Setup (Windows PowerShell)
 
@@ -291,11 +291,12 @@ request, Python execution, model summary. The caller supplies the database sessi
 and current owner from trusted server code and owns client/session cleanup.
 The function returns the final text; no HTTP endpoint or client UI is added.
 
-Only `get_recent_workouts` is advertised through the SDK's typed function-tool
-schema, generated from `GetRecentWorkoutsInput`. The user-written dispatcher
+`get_recent_workouts` and `get_exercise_progress` are advertised through typed
+function-tool schemas generated from their Pydantic inputs. The dispatcher
 also enforces this explicit allowlist before parsing arguments. Arguments are
 validated before database access; an argument cannot override the server's owner.
-Successful results contain the existing workout metadata, without sets or stats.
+The history tool returns workout metadata; the progress tool returns structured
+statistics and a history-availability status.
 
 The assistant tool-call message is preserved before each `role="tool"` result,
 and every result references its original `tool_call_id`. Unknown tools and
@@ -339,8 +340,36 @@ count while external volume is zero and `has_external_load` is false. Body mass,
 physical effort, technique, and strength improvements are not inferred. Mixed
 weighted/unweighted sets contribute only their recorded external load. Absolute
 changes describe the supplied data; no percentage changes or medical conclusions
-are calculated. Database retrieval and LLM progress-tool integration remain
-separate future tasks.
+are calculated.
+
+`app.tools.get_exercise_progress(arguments, *, session, user_id)` exposes this
+calculation to the agent. `GetExerciseProgressInput` requires a strict integer
+`exercise_id` in 1-2147483647 and accepts optional timezone-aware `start_at` and
+`end_at` boundaries. When both are supplied, `start_at < end_at` is required.
+Unknown fields, including `user_id`, are rejected.
+
+The SQL query filters the server-selected owner, exercise, and workout start
+time: `start_at <= started_at < end_at`. Omitted boundaries are unrestricted.
+Matching workouts and their sets are loaded explicitly without per-workout
+queries. History is not silently paginated or truncated. Changes compare only
+matching sessions within the selected period; no earlier baseline is fetched.
+
+The typed `ExerciseProgressResult` contains `exercise_id`, `status`, and
+`sessions: list[ExerciseWorkoutProgress]`:
+
+| Status | Meaning |
+| --- | --- |
+| `exercise_not_found` | The shared exercise catalog has no such ID; sessions are empty. |
+| `no_history` | No matching sessions for this owner and period; sessions are empty. |
+| `insufficient_history` | One session is returned with metrics and null changes. |
+| `ok` | At least two sessions are available for comparison, without implying improvement. |
+
+The tool uses only SELECTs, disables autoflush through query/serialization, and
+does not commit or roll back the caller's transaction. It reuses the existing
+Decimal calculation. The agent receives JSON with decimal strings and is
+instructed to report returned statistics, explain absent comparisons, and avoid
+inventing exercise IDs or treating zero external load as zero effort.
+Authentication remains deferred; trusted server code must supply the owner.
 
 ```powershell
 uv run --locked pytest tests/test_progress.py -q

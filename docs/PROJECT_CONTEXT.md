@@ -81,8 +81,7 @@ defaults/bounds as the API and rejects unknown fields. Server code supplies the
 session and owner separately; the tool returns `list[WorkoutRead]`. The HTTP
 history route and tool share an owner-filtered query in `app.queries`, with
 autoflush disabled so reads cannot flush pending changes. The tool does not
-manage transactions. Authentication and database-backed progress tools remain
-planned.
+manage transactions. Authentication remains planned.
 Statistics require tested calculations before progress-analysis tools expose
 them to the model.
 
@@ -99,7 +98,7 @@ with synthetic keys and responses; no live LLM calls are made automatically.
 
 The first read-only workflow in `app.agent` connects the LLM client to the
 existing tool through the user-written `execute_read_only_tool` dispatcher.
-Its explicit allowlist contains only `get_recent_workouts`; typed tool metadata
+Its explicit allowlist contains `get_recent_workouts` and `get_exercise_progress`; typed tool metadata
 reuses the Pydantic input schema. Python validates arguments before reads and
 supplies the server-selected owner/session outside model arguments. Assistant
 tool calls and JSON results are linked by `tool_call_id`. Invalid arguments and
@@ -121,9 +120,21 @@ workout ID. Absolute changes compare adjacent supplied sessions containing the
 exercise; first-session changes are None and missing exercise sessions are skipped.
 Zero external load preserves reps/sets and does not measure bodyweight effort.
 The function rejects inconsistent identities/duplicates and invalid selected
-set values without mutating inputs. It performs no SQL or LLM calls; future
-retrieval must enforce server-side ownership. Progress queries and tools remain
-deferred, and numeric changes alone do not establish strength improvement.
+set values without mutating inputs. The calculation performs no SQL or LLM calls,
+and numeric changes alone do not establish strength improvement.
+
+`get_exercise_progress` now retrieves owner-scoped exercise history and reuses
+this calculation. Its Pydantic input requires a strict positive exercise ID and
+optional aware `start_at`/`end_at` bounds with `start_at < end_at`. SQL filters
+workout start times in the half-open interval [start_at, end_at); absent bounds
+are unrestricted and history is not silently truncated. Changes use only the
+selected period. `ExerciseProgressResult` returns an exercise ID, typed session
+metrics, and one of `exercise_not_found`, `no_history`, `insufficient_history`
+(one session), or `ok` (at least two). The shared catalog is separate from
+user-scoped performed history. Queries and serialization disable autoflush;
+the tool does not manage transactions. The agent serializes the structured
+result and its prompt requires returned statistics and honest missing-data
+responses, without inferring bodyweight effort or strength improvement.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

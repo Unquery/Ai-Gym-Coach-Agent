@@ -21,7 +21,9 @@ the configurable OpenAI-compatible LLM client, and the first bounded read-only
 tool-calling workflow with explicit dispatch and mocked LLM tests.
 
 The first pure exercise-progress calculation is implemented: per-session metrics
-and absolute changes. Database retrieval and LLM progress tools remain planned.
+and absolute changes. The read-only `get_exercise_progress` tool exposes it through
+owner-scoped database retrieval, optional time bounds, and explicit missing-data
+statuses. It is registered in the bounded agent workflow with mocked LLM tests.
 
 Deterministic progress statistics are outside the completed Milestone 3 API
 scope. Implement and test each calculation before exposing its corresponding
