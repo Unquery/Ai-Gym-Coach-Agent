@@ -24,4 +24,5 @@ def test_migration_can_downgrade_and_upgrade(postgres_engine: Engine) -> None:
             "workout_plan_exercises",
             "workouts",
             "workout_sets",
+            "workout_proposals",
         }

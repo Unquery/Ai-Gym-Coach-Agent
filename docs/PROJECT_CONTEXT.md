@@ -152,7 +152,21 @@ executed; invalid/extra arguments, write-tool calls, truncated responses, and
 multiple calls fail safely before SQL. Assistant prose cannot claim persistence
 through this result. The function never writes or manages transactions.
 Pydantic does not establish extraction fidelity; human review remains required.
-Confirmation storage/user binding and actual execution are not implemented.
+Confirmation storage is now a separate backend step in `app.proposal_store`.
+Revision `0002` adds `workout_proposals`: server-generated UUID v4, server-selected
+owner, immutable typed set snapshot in JSONB, state, and timestamps. Only complete
+proposals with no issues can become pending; payloads are revalidated before SQL.
+The lifetime is 15 minutes, measured using database wall-clock time.
+
+An owner-scoped row lock protects pending -> confirmed/rejected/expired
+transitions. Time is checked after lock acquisition, including lock waits;
+expiration is recorded lazily on access. Terminal decisions cannot replay or
+change state. Unknown/foreign IDs are indistinguishable. The caller owns a
+dedicated session/transaction and commits before reporting success. Core DML and
+disabled autoflush prevent store methods from flushing unrelated ORM objects.
+These functions never create workouts/sets and are not advertised to the LLM.
+Confirmation routing/authentication and idempotent workout execution remain
+future work; confirmed currently records consent only.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

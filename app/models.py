@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
@@ -16,6 +17,7 @@ from sqlalchemy import (
     and_,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -139,3 +141,28 @@ class WorkoutSet(Base):
 
     workout: Mapped[Workout] = relationship(back_populates="sets")
     exercise: Mapped[Exercise] = relationship()
+
+
+class WorkoutProposalRecord(Base):
+    __tablename__ = "workout_proposals"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('pending', 'confirmed', 'rejected', 'expired')",
+            name="valid_state",
+        ),
+        CheckConstraint("expires_at > created_at", name="valid_expiration"),
+        CheckConstraint(
+            "(state = 'pending' AND resolved_at IS NULL) OR "
+            "(state <> 'pending' AND resolved_at IS NOT NULL)",
+            name="valid_resolution",
+        ),
+        CheckConstraint("jsonb_typeof(payload) = 'object'", name="object_payload"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID]
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    state: Mapped[str] = mapped_column(String(10), server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

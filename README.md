@@ -15,7 +15,8 @@ The MVP will use Python, FastAPI, PostgreSQL, and safe LLM tool calling to retri
 Authentication, workout planning tools, and confirmed write tools remain planned
 for later work.
 The first logging proposal step is available separately: typed, unsaved drafts
-with catalog validation and mandatory human review.
+with catalog validation and mandatory human review. A PostgreSQL proposal store
+now tracks confirmation, rejection, and expiration without creating workouts.
 
 ## Setup (Windows PowerShell)
 
@@ -382,7 +383,7 @@ uv run --locked pytest tests/test_progress.py -q
 `app.workout_proposals.propose_workout_logging(user_message, *, client, settings,
 session)` prepares a draft for human review. Calling it explicitly makes one LLM
 request through the existing provider adapter. It is separate from the read-only
-agent loop; no write tool or confirmation executor is exposed.
+agent loop; no workout-write tool is exposed.
 
 The model can return one `propose_workout_logging` function call containing a
 nonempty list of sets. Each set requires `exercise_name`, `reps`, and `weight_kg`.
@@ -412,11 +413,60 @@ before catalog access. The workflow never adds, flushes, commits, or rolls back
 database records; the caller owns the session and client. SDK/database failures
 propagate without a success result. Schema validation checks structure and
 ranges, not semantic fidelity to the original text, so human review is required.
-Confirmation storage, user binding, write execution, and conversation routing
-remain separate future tasks. Tests mock all LLM responses.
+Draft extraction remains separate from the persistence/decision functions below.
+Workout write execution and conversation routing remain future tasks. Tests mock
+all LLM responses.
 
 ```powershell
 uv run --locked pytest tests/test_workout_proposals.py -q
+```
+
+## Proposal confirmation lifecycle
+
+Alembic revision `0002` adds only `workout_proposals`. Apply migrations with the
+existing `uv run --env-file .env --locked alembic upgrade head` command before
+using the store. No in-memory proposal registry or worker-local state is used.
+
+`app.proposal_store` provides three server-side functions:
+
+- `create_workout_proposal(proposal, *, session, user_id)` revalidates a complete
+  `awaiting_confirmation` draft with no issues. It stores a JSONB snapshot of
+  resolved, non-null sets with positive IDs/counts, consecutive per-exercise set
+  numbers, and exact Decimal strings. Server-generated UUID v4 IDs identify the
+  snapshot; database wall-clock time determines creation and a 15-minute lifetime.
+- `get_workout_proposal(proposal_id, *, session, user_id)` reads the owned
+  snapshot and records expiration when a pending proposal is past its deadline.
+- `decide_workout_proposal(proposal_id, decision, *, session, user_id)` accepts
+  an explicit `confirm` or `reject` action from a trusted user-action handler.
+  It never obtains approval from LLM text or model-generated arguments.
+
+State moves from `pending` to `confirmed`, `rejected`, or `expired`. Terminal
+states cannot transition again; repeated or conflicting decisions raise
+`ProposalClosedError`. At `now >= expires_at`, a pending decision returns
+`state="expired"`, without confirming or rejecting. Unknown and foreign-owner
+IDs both raise `ProposalNotFoundError`. IDs do not replace authorization: trusted
+server code supplies the owner, and authentication remains a future task.
+
+Reads and decisions lock the owner-scoped row with `SELECT FOR UPDATE`; time is
+read using PostgreSQL `clock_timestamp()` after the lock is acquired. This avoids
+duplicate confirmations across workers and stale transaction-start time after
+waiting for a lock. The snapshot is immutable through this interface; edits
+require a new proposal ID. The returned `StoredWorkoutProposal` includes ID,
+owner, state, typed payload, and creation/expiration/resolution timestamps.
+
+Use a dedicated session and `with session.begin(): ...` around each operation.
+The caller commits before reporting success, including when recording expiration.
+Store operations use Core DML with autoflush disabled; they never commit, roll
+back, or flush unrelated pending ORM objects. Rollback preserves the previous
+state. Only proposal-table records are inserted/updated. A `confirmed` proposal
+does not create `Workout` or `WorkoutSet` records. A future executor still needs
+its own transactional replay protection and catalog revalidation.
+
+These functions are not registered in the LLM tool allowlist. No confirmation
+HTTP route or workout execution is included in this step.
+
+```powershell
+uv run --env-file .env --locked pytest tests/test_proposal_store.py tests/test_migrations.py -q
 ```
 
 ## Test
