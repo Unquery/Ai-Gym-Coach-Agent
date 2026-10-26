@@ -136,6 +136,24 @@ the tool does not manage transactions. The agent serializes the structured
 result and its prompt requires returned statistics and honest missing-data
 responses, without inferring bodyweight effort or strength improvement.
 
+The first workout logging proposal step is implemented separately in
+`app.workout_proposals`, without changing the read-only agent loop. One explicit
+LLM call extracts a nonempty ordered set list; required nullable reps/external
+weights distinguish missing values from explicit zero, with existing numeric
+validation limits. The model is instructed to preserve source names and leave
+missing values unknown. Python matches the shared catalog using outer trim and casefold, rejects
+unknown/ambiguous names, and assigns set numbers per resolved exercise while
+preserving global proposal order. Catalog reads disable autoflush.
+
+The typed result has server-selected `needs_clarification` or
+`awaiting_confirmation` status, `requires_confirmation=True`, proposed sets,
+and issue codes with zero-based set indices. No model-selected function is
+executed; invalid/extra arguments, write-tool calls, truncated responses, and
+multiple calls fail safely before SQL. Assistant prose cannot claim persistence
+through this result. The function never writes or manages transactions.
+Pydantic does not establish extraction fidelity; human review remains required.
+Confirmation storage/user binding and actual execution are not implemented.
+
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
 - A write operation (including workout logging/editing) needs explicit user confirmation.

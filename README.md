@@ -14,6 +14,8 @@ The MVP will use Python, FastAPI, PostgreSQL, and safe LLM tool calling to retri
 
 Authentication, workout planning tools, and confirmed write tools remain planned
 for later work.
+The first logging proposal step is available separately: typed, unsaved drafts
+with catalog validation and mandatory human review.
 
 ## Setup (Windows PowerShell)
 
@@ -373,6 +375,48 @@ Authentication remains deferred; trusted server code must supply the owner.
 
 ```powershell
 uv run --locked pytest tests/test_progress.py -q
+```
+
+## Workout logging proposals
+
+`app.workout_proposals.propose_workout_logging(user_message, *, client, settings,
+session)` prepares a draft for human review. Calling it explicitly makes one LLM
+request through the existing provider adapter. It is separate from the read-only
+agent loop; no write tool or confirmation executor is exposed.
+
+The model can return one `propose_workout_logging` function call containing a
+nonempty list of sets. Each set requires `exercise_name`, `reps`, and `weight_kg`.
+Reps and weight may explicitly be null when unknown; there are no numeric
+defaults. Reps are strict positive integers; external kg use finite nonnegative
+Decimal values with at most two decimal places, matching storage bounds.
+Unknown fields such as model-selected IDs or confirmation flags are rejected.
+
+Python reads the real shared exercise catalog with autoflush disabled and
+matches names after trimming outer whitespace and applying `casefold()`.
+It does not translate names, use fuzzy matching, or create exercises. Zero or
+multiple matches require clarification. Set order is preserved across exercises,
+with set numbers assigned separately for each resolved exercise ID.
+
+`WorkoutLoggingProposal` returns `status`, `requires_confirmation=True`, ordered
+`sets`, and typed `issues`. Each proposed set includes the requested name,
+catalog ID/name (null when unresolved), set number, reps, and external weight.
+Issue codes identify unknown/ambiguous names, missing reps/weight, or invalid
+model responses; `set_index` is zero-based, or null for a response-level issue.
+Any issue makes the whole draft `needs_clarification`; otherwise it is
+`awaiting_confirmation`. Neither status means confirmed or saved.
+
+Model-selected function calls are parsed as data and never executed. Assistant
+prose, including claims of saving or confirmation, is not returned as a result.
+Malformed, truncated, unexpected, or multiple calls yield a clarification result
+before catalog access. The workflow never adds, flushes, commits, or rolls back
+database records; the caller owns the session and client. SDK/database failures
+propagate without a success result. Schema validation checks structure and
+ranges, not semantic fidelity to the original text, so human review is required.
+Confirmation storage, user binding, write execution, and conversation routing
+remain separate future tasks. Tests mock all LLM responses.
+
+```powershell
+uv run --locked pytest tests/test_workout_proposals.py -q
 ```
 
 ## Test

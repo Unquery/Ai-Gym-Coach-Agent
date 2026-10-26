@@ -25,6 +25,10 @@ and absolute changes. The read-only `get_exercise_progress` tool exposes it thro
 owner-scoped database retrieval, optional time bounds, and explicit missing-data
 statuses. It is registered in the bounded agent workflow with mocked LLM tests.
 
+The first logging proposal step now produces validated, unsaved drafts with
+catalog resolution and human-review status. Confirmation storage, conversation
+routing, and write execution remain planned; no write tool is exposed.
+
 Deterministic progress statistics are outside the completed Milestone 3 API
 scope. Implement and test each calculation before exposing its corresponding
 progress-analysis tool to the LLM.
