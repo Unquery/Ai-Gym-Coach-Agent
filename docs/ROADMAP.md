@@ -31,7 +31,10 @@ now binds an immutable snapshot to its owner and enforces pending/confirmed/
 rejected/expired states, expiration, and replay protection. A separate server-side
 executor now atomically persists confirmed workouts and ordered sets, with owner
 checks, catalog revalidation, and idempotent concurrent/repeated execution.
-Conversation/confirmation routing remains planned; no write tool is exposed.
+The agent now exposes pending proposal creation alongside its read tools, with
+Pydantic validation, catalog resolution, and a typed handoff for human review.
+Trusted human confirmation routing remains planned; confirmation and workout
+execution are never exposed as LLM tools.
 
 Deterministic progress statistics are outside the completed Milestone 3 API
 scope. Implement and test each calculation before exposing its corresponding

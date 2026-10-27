@@ -132,6 +132,13 @@ def propose_workout_logging(
             issues=[WorkoutProposalIssue(code="invalid_model_response")],
         )
 
+    return resolve_workout_logging(draft, session=session)
+
+
+def resolve_workout_logging(
+    draft: WorkoutLoggingDraft, *, session: Session,
+) -> WorkoutLoggingProposal:
+    """Resolve validated draft data against the catalog without writes or LLM calls."""
     with session.no_autoflush:
         catalog = session.execute(
             select(Exercise.id, Exercise.name).order_by(Exercise.id)

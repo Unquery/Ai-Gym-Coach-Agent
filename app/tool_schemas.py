@@ -3,6 +3,8 @@ from typing import Annotated, Self
 from openai.types.chat import ChatCompletionToolUnionParam
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
+from app.workout_proposals import DRAFT_TOOL_NAME, WorkoutLoggingDraft
+
 
 class GetRecentWorkoutsInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -58,3 +60,22 @@ def get_read_only_tool_schemas() -> list[ChatCompletionToolUnionParam]:
             },
         },
     ]
+
+
+def get_agent_tool_schemas() -> list[ChatCompletionToolUnionParam]:
+    """Allow catalog-validated pending proposals alongside the existing read tools."""
+    return [*get_read_only_tool_schemas(), {
+        "type": "function",
+        "function": {
+            "name": DRAFT_TOOL_NAME,
+            "description": (
+                "Propose logging explicitly described performed sets for human review. "
+                "Supply original exercise names, reps and external weight in kg, "
+                "preserving set order. Use null for missing/unclear reps or weight; "
+                "zero weight requires explicit absence of extra load. The backend "
+                "resolves catalog names and may store a pending proposal only. "
+                "Never confirms or creates a workout. Request this tool alone."
+            ),
+            "parameters": WorkoutLoggingDraft.model_json_schema(),
+        },
+    }]

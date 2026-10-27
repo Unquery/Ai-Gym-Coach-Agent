@@ -3,15 +3,19 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Exercise
 from app.progress import ExerciseWorkoutProgress, analyze_exercise_progress
+from app.proposal_store import create_workout_proposal
 from app.queries import get_exercise_workouts, get_workout_history
 from app.schemas import WorkoutDetailRead, WorkoutRead
 from app.tool_schemas import GetExerciseProgressInput, GetRecentWorkoutsInput
+from app.workout_proposals import (
+    WorkoutLoggingDraft, WorkoutLoggingProposal, resolve_workout_logging,
+)
 
 
 class ExerciseProgressResult(BaseModel):
@@ -20,6 +24,28 @@ class ExerciseProgressResult(BaseModel):
         "exercise_not_found", "no_history", "insufficient_history", "ok"
     ]
     sessions: list[ExerciseWorkoutProgress]
+
+
+class WorkoutProposalToolResult(WorkoutLoggingProposal):
+    proposal_id: UUID | None = None
+    expires_at: AwareDatetime | None = None
+
+
+def create_workout_logging_proposal(
+    arguments: WorkoutLoggingDraft, *, session: Session, user_id: UUID,
+) -> WorkoutProposalToolResult:
+    """Resolve a draft and store complete pending consent; the caller must commit.
+
+    No workout/set writes, human decisions, LLM requests, or transaction management.
+    Incomplete/ambiguous drafts return clarification with no stored proposal ID.
+    """
+    proposal = resolve_workout_logging(arguments, session=session)
+    if proposal.status == "needs_clarification":
+        return WorkoutProposalToolResult(**proposal.model_dump())
+    stored = create_workout_proposal(proposal, session=session, user_id=user_id)
+    return WorkoutProposalToolResult(
+        **proposal.model_dump(), proposal_id=stored.id, expires_at=stored.expires_at,
+    )
 
 
 def get_recent_workouts(

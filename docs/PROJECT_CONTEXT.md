@@ -136,8 +136,8 @@ the tool does not manage transactions. The agent serializes the structured
 result and its prompt requires returned statistics and honest missing-data
 responses, without inferring bodyweight effort or strength improvement.
 
-The first workout logging proposal step is implemented separately in
-`app.workout_proposals`, without changing the read-only agent loop. One explicit
+The standalone workout logging proposal step remains available in
+`app.workout_proposals`. One explicit
 LLM call extracts a nonempty ordered set list; required nullable reps/external
 weights distinguish missing values from explicit zero, with existing numeric
 validation limits. The model is instructed to preserve source names and leave
@@ -176,6 +176,21 @@ while referenced. IDs, per-exercise numbering, reps, Decimal external weights, a
 interleaved set order are preserved. Confirmation TTL limits consent, not later
 execution/retries. No executor is exposed to the LLM; confirmation routing and
 authentication remain future work.
+
+`app.agent.run_agent` now integrates pending proposal creation alongside the two
+read tools through the same bounded loop. The separate `run_read_only_agent`
+entry retains its strict read-only allowlist and text contract. The new dispatcher
+accepts only `WorkoutLoggingDraft` data for `propose_workout_logging`; Pydantic
+rejects model-selected ownership, IDs, numbering, or consent. The deterministic
+catalog resolver is shared with standalone extraction, avoiding a nested LLM call.
+Complete resolved drafts create only an owner-bound pending snapshot. Missing or
+ambiguous data return clarification without persistence. A proposal must be the
+sole call in a complete batch; both outcomes terminate the loop with a typed
+`WorkoutProposalToolResult`, discarding assistant prose and requiring human review.
+The caller owns the transaction and reports storage only after commit; failures
+roll back. One run creates at most one proposal; separate runs can create new
+pending snapshots. Neither confirmation nor workout execution is registered as
+an agent tool. Human-action HTTP routing and authentication remain planned.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

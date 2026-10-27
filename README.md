@@ -14,10 +14,10 @@ The MVP will use Python, FastAPI, PostgreSQL, and safe LLM tool calling to retri
 
 Authentication, workout planning tools, and confirmed write tools remain planned
 for later work.
-The first logging proposal step is available separately: typed, unsaved drafts
-with catalog validation and mandatory human review. A PostgreSQL proposal store
-tracks confirmation, rejection, and expiration. A separate server-side executor
-can atomically save confirmed workouts and their sets with replay protection.
+The agent can also prepare catalog-validated pending workout proposals for human
+review. A PostgreSQL proposal store tracks confirmation, rejection, and expiration.
+A separate server-side executor can atomically save confirmed workouts and their
+sets with replay protection. Confirmation and execution are never LLM tools.
 
 ## Setup (Windows PowerShell)
 
@@ -319,6 +319,65 @@ PostgreSQL-backed owner-isolation case; no live LLM requests run automatically.
 ```powershell
 # Include PostgreSQL ownership and tool tests in disposable schemas:
 uv run --env-file .env --locked pytest tests/test_agent.py tests/test_tools.py tests/test_llm.py tests/test_health.py -q
+```
+
+## Agent workout proposals
+
+`app.agent.run_agent(user_message, *, client, settings, session, user_id)` adds
+`propose_workout_logging` to the two existing read tools, using the same bounded
+loop. `run_read_only_agent` retains its read-only allowlist and text return contract.
+The new entry returns either ordinary answer text or `WorkoutProposalToolResult`
+for human review. No new HTTP endpoint, dependency, or migration is required.
+
+The model supplies only ordered exercise names, reps, and external kg weights
+through `WorkoutLoggingDraft`. Arguments are validated with Pydantic before SQL;
+owner IDs, catalog IDs, set numbers, and confirmation flags are rejected. Trusted
+server code supplies the owner. The existing catalog resolver is shared with the
+standalone extraction workflow; no nested extraction LLM request is made.
+
+A valid complete draft creates only a `pending` proposal. Its typed result has
+`status="awaiting_confirmation"`, reviewed sets, `requires_confirmation=True`, a
+server-generated `proposal_id`, and `expires_at`. Missing reps/weights or unknown/
+ambiguous names instead return `status="needs_clarification"`, indexed issues,
+and null ID/expiration; no partial proposal is saved and unknown weight stays null.
+Invalid JSON/schema arguments return the existing `invalid_arguments` tool error
+and can be corrected within the normal budget.
+
+A proposal call must be the only call in its batch and have a complete
+`finish_reason="tool_calls"` response. Mixed/duplicate proposal batches are
+rejected before tool execution. A successful proposal/clarification result ends
+the loop immediately; untrusted assistant prose is discarded and no LLM summary
+or confirmation request is executed afterwards. Each run creates at most one
+pending proposal. Retrying a new run can create another pending proposal; workout
+execution idempotency is enforced separately by the proposal ID.
+
+Use a dedicated session and transaction, with `client`/`settings` already supplied
+by the existing LLM setup:
+
+```python
+from sqlalchemy.orm import Session
+
+from app.agent import run_agent
+
+with Session(engine) as session, session.begin():
+    result = run_agent(
+        user_message, client=client, settings=settings,
+        session=session, user_id=trusted_user_id,
+    )
+# Only now report a pending proposal as stored and display it for human review.
+```
+
+The agent neither commits nor flushes unrelated pending ORM changes. Let failures
+leave the transaction block to roll back; database errors stop with a generic
+`AgentError` and never enter another model request. Only pending proposal storage
+is allowed: no `Workout`/`WorkoutSet` is created or confirmed. The existing
+`decide_workout_proposal` and `execute_confirmed_workout` functions remain separate
+trusted user-action backend operations. Authentication and HTTP confirmation
+routing remain planned. Pydantic validates structure, not extraction fidelity;
+human review of the actual snapshot is still necessary.
+
+```powershell
+uv run --env-file .env --locked pytest tests/test_agent.py tests/test_workout_proposals.py tests/test_proposal_store.py tests/test_workout_execution.py -q
 ```
 
 ## Deterministic exercise progress
