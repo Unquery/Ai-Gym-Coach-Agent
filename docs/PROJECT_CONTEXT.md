@@ -165,8 +165,17 @@ change state. Unknown/foreign IDs are indistinguishable. The caller owns a
 dedicated session/transaction and commits before reporting success. Core DML and
 disabled autoflush prevent store methods from flushing unrelated ORM objects.
 These functions never create workouts/sets and are not advertised to the LLM.
-Confirmation routing/authentication and idempotent workout execution remain
-future work; confirmed currently records consent only.
+Confirmed records consent only; a separate `app.workout_execution` service now
+executes it atomically in the caller's transaction. Revision `0003` adds a nullable
+unique execution link from proposals to same-owner workouts and nullable global
+set positions for backward compatibility. A row lock serializes execution/replay;
+the service returns the existing workout on retries. Catalog IDs/names are checked
+under shared locks before first execution. Workout, all sets, and the execution
+link commit together or roll back together. Linked workouts cannot be deleted
+while referenced. IDs, per-exercise numbering, reps, Decimal external weights, and
+interleaved set order are preserved. Confirmation TTL limits consent, not later
+execution/retries. No executor is exposed to the LLM; confirmation routing and
+authentication remain future work.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

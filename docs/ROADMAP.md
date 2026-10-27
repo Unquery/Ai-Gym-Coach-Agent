@@ -28,8 +28,10 @@ statuses. It is registered in the bounded agent workflow with mocked LLM tests.
 The first logging proposal step now produces validated, unsaved drafts with
 catalog resolution and human-review status. PostgreSQL-backed proposal storage
 now binds an immutable snapshot to its owner and enforces pending/confirmed/
-rejected/expired states, expiration, and replay protection. Conversation routing
-and workout write execution remain planned; no write tool is exposed.
+rejected/expired states, expiration, and replay protection. A separate server-side
+executor now atomically persists confirmed workouts and ordered sets, with owner
+checks, catalog revalidation, and idempotent concurrent/repeated execution.
+Conversation/confirmation routing remains planned; no write tool is exposed.
 
 Deterministic progress statistics are outside the completed Milestone 3 API
 scope. Implement and test each calculation before exposing its corresponding

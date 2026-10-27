@@ -21,8 +21,8 @@ erDiagram
 | `workout_plans` | Integer `id`, required UUID `user_id`, nonblank `name`; name unique per user. |
 | `workout_plan_exercises` | Plan and exercise FKs; positive `position`, `target_sets`, `target_reps`; unique `(plan_id, position)`. |
 | `workouts` | Integer `id`, required UUID `user_id`, optional `plan_id`, timezone-aware `started_at` defaulting to database time. |
-| `workout_sets` | Workout and exercise FKs; positive `set_number` and `reps`, `NUMERIC(7,2)` `weight_kg`; unique `(workout_id, exercise_id, set_number)`. |
-| `workout_proposals` | Server-generated UUID `id`, UUID owner, JSONB payload, lifecycle state, and timezone-aware creation/expiration/resolution times; added in revision `0002`. |
+| `workout_sets` | Workout and exercise FKs; positive `set_number` and `reps`, `NUMERIC(7,2)` `weight_kg`; unique `(workout_id, exercise_id, set_number)`. Revision `0003` adds nullable positive `position`, unique within each workout. |
+| `workout_proposals` | Server-generated UUID `id`, UUID owner, JSONB payload, lifecycle state, and timezone-aware creation/expiration/resolution times; added in revision `0002`. Revision `0003` adds nullable unique `workout_id`, restricted to confirmed proposals and referencing a same-owner workout. |
 
 A plan is a reusable template for one session, not a multi-day calendar. Its
 association rows preserve exercise order and targets. The same exercise can
@@ -37,6 +37,10 @@ storage avoids binary floating-point artifacts. The weight constraint excludes
 negative/non-finite values; 99999.99 is the column's storage limit, not a training
 recommendation. This version supports repetition-based sets only; durations,
 distance, and assisted negative loads are deferred.
+
+Proposal-executed sets also have a global `position` starting at 1, preserving
+interleaved exercise order. Reads sort by position first, then exercise/set number
+for legacy or manually added sets whose position is null. No legacy order is invented.
 
 ## Ownership and deletion
 
@@ -77,7 +81,8 @@ changes will still need explicit user confirmation before entering that write
 transaction.
 
 Alembic revision `0001` creates the five workout/catalog tables and constraints;
-revision `0002` adds the proposal table. Schema is never
+revision `0002` adds the proposal table, and `0003` adds the execution link and
+global set positions with nullable defaults for existing records. Schema is never
 created by application startup. Run `alembic upgrade head` before accessing data;
 `alembic check` detects model/migration drift. For future schema changes, generate
 and review a new revision instead of editing an already applied migration.
@@ -91,7 +96,7 @@ runtime role with only required data permissions. PostgreSQL stays on loopback.
 
 ## Proposal snapshots and human decisions
 
-`workout_proposals` is independent of workout/set records. Only fully resolved,
+`workout_proposals` stores snapshots separately from workout/set records. Only fully resolved,
 complete proposals can enter the store. JSONB preserves set-list order and
 Decimal weights as strings; it contains validated sets rather than LLM prose.
 State is `pending`, `confirmed`, `rejected`, or `expired`. Checks enforce known
@@ -108,9 +113,30 @@ it needs no background worker. Confirmed/rejected/expired records remain termina
 and retain the original snapshot. No snapshot-edit operation is exposed.
 
 Confirmation records consent only: no workout or set is created. These server
-functions are not LLM tools. Future execution must revalidate catalog references
-and enforce execution idempotency in its own transaction. Snapshots intentionally
-have no exercise/workout FKs that could delete or rewrite historical consent.
+functions are not LLM tools. Snapshots intentionally have no exercise FKs that
+could delete or rewrite historical consent.
+
+## Atomic execution and idempotency
+
+`app.workout_execution.execute_confirmed_workout` accepts only stored confirmed
+consent for the server-selected owner. It reuses the proposal row lock and validates
+the typed snapshot again. The confirmation deadline is checked when consent is
+recorded; execution/retries do not expire an already-confirmed decision.
+
+Before first execution, catalog IDs and names must still match the reviewed
+snapshot. Catalog rows are locked `FOR SHARE` until transaction completion to
+prevent rename/delete races. A mismatch requires a new proposal and consent.
+The executor creates one unplanned workout, all ordered sets, and the proposal's
+execution link in the caller's single transaction, using Core DML with autoflush
+disabled. Errors must propagate out of `session.begin()` so all changes roll back;
+only report success after commit. No LLM request or authorization is involved.
+
+The nullable unique proposal `workout_id` is the durable execution marker. A
+composite FK to `workouts(id, user_id)` enforces equal ownership, and a check
+requires linked proposals to be confirmed. `ON DELETE RESTRICT` protects linked
+workouts from deletion while referenced. Concurrent executions serialize on the
+proposal lock; later calls return the existing owner-scoped workout and ordered
+sets. Existing lifecycle decisions remain terminal and cannot be replayed.
 
 ## Verification and synthetic data
 

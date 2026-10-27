@@ -60,6 +60,7 @@ class WorkoutProposalPayload(BaseModel):
 class StoredWorkoutProposal(BaseModel):
     id: UUID
     user_id: UUID
+    workout_id: int | None
     state: ProposalState
     payload: WorkoutProposalPayload
     created_at: AwareDatetime

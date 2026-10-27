@@ -16,7 +16,8 @@ Authentication, workout planning tools, and confirmed write tools remain planned
 for later work.
 The first logging proposal step is available separately: typed, unsaved drafts
 with catalog validation and mandatory human review. A PostgreSQL proposal store
-now tracks confirmation, rejection, and expiration without creating workouts.
+tracks confirmation, rejection, and expiration. A separate server-side executor
+can atomically save confirmed workouts and their sets with replay protection.
 
 ## Setup (Windows PowerShell)
 
@@ -458,15 +459,62 @@ Use a dedicated session and `with session.begin(): ...` around each operation.
 The caller commits before reporting success, including when recording expiration.
 Store operations use Core DML with autoflush disabled; they never commit, roll
 back, or flush unrelated pending ORM objects. Rollback preserves the previous
-state. Only proposal-table records are inserted/updated. A `confirmed` proposal
-does not create `Workout` or `WorkoutSet` records. A future executor still needs
-its own transactional replay protection and catalog revalidation.
+state. These lifecycle functions only insert/update proposal records. A
+`confirmed` decision records consent; execution is a separate operation below.
 
 These functions are not registered in the LLM tool allowlist. No confirmation
-HTTP route or workout execution is included in this step.
+HTTP route is included in this step.
 
 ```powershell
 uv run --env-file .env --locked pytest tests/test_proposal_store.py tests/test_migrations.py -q
+```
+
+## Execute a confirmed workout
+
+`app.workout_execution.execute_confirmed_workout(proposal_id, *, session, user_id)`
+executes an already-confirmed, owner-scoped snapshot. Trusted server code supplies
+the owner; LLM arguments/text never authorize execution. Pending, rejected,
+expired, foreign-owner, and unknown proposals cannot create workouts. The
+15-minute deadline applies to giving consent; an existing confirmed decision
+remains valid for execution or retry after that deadline.
+
+Apply revision `0003` before use. It adds a nullable unique `workout_id` link on
+the proposal and nullable `position` on sets; existing records remain valid.
+The composite FK ensures the proposal and workout have the same owner. Linked
+workouts cannot be deleted while referenced. Set positions are positive and
+unique within a workout; legacy sets retain their previous exercise/set ordering.
+
+The executor holds the proposal row lock through the caller's transaction. It
+revalidates the stored payload and locks the referenced catalog rows for shared
+access. Missing or renamed exercises raise `ProposalCatalogChangedError`, requiring
+a new proposal and human review. It copies the reviewed IDs, per-exercise set
+numbers, repetitions, exact external Decimal weights, and global set order.
+The new workout has no plan; its start time uses the existing database default.
+
+Use a dedicated session and let failures leave the transaction block:
+
+```python
+from sqlalchemy.orm import Session
+
+from app.workout_execution import execute_confirmed_workout
+
+with Session(engine) as session, session.begin():
+    saved = execute_confirmed_workout(proposal_id, session=session, user_id=trusted_user_id)
+# Report success only here, after commit succeeds.
+```
+
+Workout creation, all set inserts, and the execution link commit together. Any
+failure rolls them all back and permits retry using the existing consent. The
+function returns `WorkoutDetailRead` and never commits or flushes unrelated ORM
+objects. Repeated/concurrent execution returns the same saved workout without
+inserting duplicates or requiring catalog revalidation again. Repeating the
+separate human decision still raises `ProposalClosedError`.
+
+This executor is not an LLM tool or HTTP route. Authentication and confirmation
+routing remain separate work. No live LLM call is needed to execute or test it.
+
+```powershell
+uv run --env-file .env --locked pytest tests/test_workout_execution.py tests/test_proposal_store.py tests/test_migrations.py -q
 ```
 
 ## Test

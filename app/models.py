@@ -86,6 +86,7 @@ class WorkoutPlanExercise(Base):
 class Workout(Base):
     __tablename__ = "workouts"
     __table_args__ = (
+        UniqueConstraint("id", "user_id"),
         ForeignKeyConstraint(
             ["plan_id", "user_id"],
             ["workout_plans.id", "workout_plans.user_id"],
@@ -110,7 +111,9 @@ class Workout(Base):
     )
     sets: Mapped[list["WorkoutSet"]] = relationship(
         back_populates="workout",
-        order_by="(WorkoutSet.exercise_id, WorkoutSet.set_number)",
+        order_by=lambda: (
+            WorkoutSet.position.asc().nulls_last(), WorkoutSet.exercise_id, WorkoutSet.set_number
+        ),
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
@@ -120,6 +123,8 @@ class WorkoutSet(Base):
     __tablename__ = "workout_sets"
     __table_args__ = (
         UniqueConstraint("workout_id", "exercise_id", "set_number"),
+        UniqueConstraint("workout_id", "position", name="uq_workout_sets_workout_position"),
+        CheckConstraint("position > 0", name="positive_position"),
         CheckConstraint("set_number > 0", name="positive_set_number"),
         CheckConstraint("reps > 0", name="positive_reps"),
         CheckConstraint(
@@ -136,6 +141,7 @@ class WorkoutSet(Base):
         ForeignKey("exercises.id", ondelete="RESTRICT")
     )
     set_number: Mapped[int]
+    position: Mapped[int | None]
     reps: Mapped[int]
     weight_kg: Mapped[Decimal] = mapped_column(Numeric(7, 2))
 
@@ -146,6 +152,14 @@ class WorkoutSet(Base):
 class WorkoutProposalRecord(Base):
     __tablename__ = "workout_proposals"
     __table_args__ = (
+        UniqueConstraint("workout_id"),
+        ForeignKeyConstraint(
+            ["workout_id", "user_id"], ["workouts.id", "workouts.user_id"],
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "workout_id IS NULL OR state = 'confirmed'", name="confirmed_execution"
+        ),
         CheckConstraint(
             "state IN ('pending', 'confirmed', 'rejected', 'expired')",
             name="valid_state",
@@ -161,6 +175,7 @@ class WorkoutProposalRecord(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     user_id: Mapped[UUID]
+    workout_id: Mapped[int | None]
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
     state: Mapped[str] = mapped_column(String(10), server_default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
