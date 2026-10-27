@@ -18,6 +18,7 @@ The agent can also prepare catalog-validated pending workout proposals for human
 review. A PostgreSQL proposal store tracks confirmation, rejection, and expiration.
 A separate server-side executor can atomically save confirmed workouts and their
 sets with replay protection. Confirmation and execution are never LLM tools.
+`POST /agent/chat` exposes answers and proposals through a typed JSON contract.
 
 ## Setup (Windows PowerShell)
 
@@ -327,7 +328,7 @@ uv run --env-file .env --locked pytest tests/test_agent.py tests/test_tools.py t
 `propose_workout_logging` to the two existing read tools, using the same bounded
 loop. `run_read_only_agent` retains its read-only allowlist and text return contract.
 The new entry returns either ordinary answer text or `WorkoutProposalToolResult`
-for human review. No new HTTP endpoint, dependency, or migration is required.
+for human review. The HTTP adapter below calls it without changing its tool allowlist.
 
 The model supplies only ordered exercise names, reps, and external kg weights
 through `WorkoutLoggingDraft`. Arguments are validated with Pydantic before SQL;
@@ -378,6 +379,66 @@ human review of the actual snapshot is still necessary.
 
 ```powershell
 uv run --env-file .env --locked pytest tests/test_agent.py tests/test_workout_proposals.py tests/test_proposal_store.py tests/test_workout_execution.py -q
+```
+
+## Agent chat HTTP API
+
+`POST /agent/chat` accepts one required string field, `message`. Leading/trailing
+whitespace is trimmed; the resulting length must be 1–4000 characters. Non-string
+values and all extra fields, including `user_id` and confirmation flags, return
+422 before an LLM client is created. The server uses the existing synthetic
+demo-user dependency; this remains local demo identity, not authentication.
+
+Request:
+
+```json
+{"message": "Show my recent workouts"}
+```
+
+Successful responses use HTTP 200 and a `type` discriminator, also described in
+OpenAPI for clients such as Android:
+
+- `{"type":"answer","message":"..."}` for ordinary text.
+- `{"type":"proposal","proposal":{...}}` for the existing typed proposal result.
+  `proposal.status="awaiting_confirmation"` includes the reviewed sets, mandatory
+  confirmation flag, pending proposal UUID and expiration. `needs_clarification`
+  includes indexed issues and null ID/expiration; no proposal was stored.
+
+UUIDs and timestamps serialize as strings; exact Decimal weights serialize as
+strings, while unknown weights remain null. No owner ID or authorization flag is
+accepted from the client or model. Natural-language requests to confirm do not
+authorize writes: confirmation and workout execution remain separate backend
+actions. Chat never creates `Workout` or `WorkoutSet` records.
+
+The synchronous route reuses `run_agent`, request-scoped sessions and server-side
+identity injection. LLM settings are loaded only for validated chat requests;
+`/health` and application import do not require them. The LLM client is closed
+before the transaction commits. An answer/proposal is returned only after commit
+succeeds; any exception rolls back that transaction, including commit-time failure.
+No additional endpoint, dependency, migration, streaming or conversation storage
+is introduced. Each request is one independent agent conversation.
+
+Errors use fixed `{"detail":"..."}` messages without provider bodies, keys, SQL
+or tracebacks: 504 for SDK timeouts; 502 for other provider failures or `AgentError`
+(including malformed replies and processing failures); 503 for invalid/missing LLM
+configuration, provider rate limits or a database error escaping the transaction.
+Provider authentication errors are 502, since they concern server credentials.
+Invalid request bodies retain FastAPI's standard 422 validation response.
+The existing SDK timeout is 30 seconds with no automatic retries. It is a network
+timeout, not an overall deadline for the bounded agent conversation (up to three
+LLM calls). No background worker continues after an HTTP timeout response.
+
+Start with database and LLM configuration loaded, using the existing server command:
+
+```powershell
+uv run --env-file .env --locked uvicorn app.main:app --reload
+```
+
+Automated checks use a mocked HTTP transport for every LLM request, plus disposable
+PostgreSQL schemas for persistence and commit rollback:
+
+```powershell
+uv run --env-file .env --locked pytest tests/test_agent_chat.py -q
 ```
 
 ## Deterministic exercise progress

@@ -4,12 +4,22 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query
+from openai import APIError, APITimeoutError, RateLimitError
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
+from app.agent import AgentError, run_agent
+from app.agent_schemas import (
+    AgentAnswerResponse,
+    AgentChatRequest,
+    AgentChatResponse,
+    AgentProposalResponse,
+)
 from app.database import get_session
+from app.llm import create_llm_client
+from app.llm_config import load_llm_settings
 from app.models import Exercise, Workout, WorkoutPlan, WorkoutSet
 from app.queries import get_workout_history
 from app.schemas import (
@@ -34,6 +44,41 @@ def get_demo_user_id() -> UUID:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/agent/chat", response_model=AgentChatResponse)
+def agent_chat(
+    payload: AgentChatRequest,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+) -> AgentAnswerResponse | AgentProposalResponse:
+    # Load configuration only after body validation, without affecting app startup.
+    try:
+        settings = load_llm_settings()
+    except ValueError:
+        raise HTTPException(status_code=503, detail="AI service is unavailable") from None
+
+    try:
+        with session.begin():
+            with create_llm_client(settings) as client:
+                result = run_agent(
+                    payload.message, client=client, settings=settings,
+                    session=session, user_id=user_id,
+                )
+            response = (
+                AgentAnswerResponse(message=result) if isinstance(result, str)
+                else AgentProposalResponse(proposal=result)
+            )
+        # A pending proposal is reported as stored only after commit succeeds.
+        return response
+    except APITimeoutError:
+        raise HTTPException(status_code=504, detail="AI service timed out") from None
+    except RateLimitError:
+        raise HTTPException(status_code=503, detail="AI service is unavailable") from None
+    except (APIError, AgentError):
+        raise HTTPException(status_code=502, detail="AI response could not be produced") from None
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail="AI service is unavailable") from None
 
 
 @app.get("/exercises", response_model=list[ExerciseRead])

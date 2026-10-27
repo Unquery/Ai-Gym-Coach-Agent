@@ -33,6 +33,8 @@ executor now atomically persists confirmed workouts and ordered sets, with owner
 checks, catalog revalidation, and idempotent concurrent/repeated execution.
 The agent now exposes pending proposal creation alongside its read tools, with
 Pydantic validation, catalog resolution, and a typed handoff for human review.
+`POST /agent/chat` exposes this workflow with a strict message-only request,
+tagged JSON responses, server-selected identity, and controlled failures.
 Trusted human confirmation routing remains planned; confirmation and workout
 execution are never exposed as LLM tools.
 

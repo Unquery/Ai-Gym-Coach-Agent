@@ -192,6 +192,20 @@ roll back. One run creates at most one proposal; separate runs can create new
 pending snapshots. Neither confirmation nor workout execution is registered as
 an agent tool. Human-action HTTP routing and authentication remain planned.
 
+`POST /agent/chat` now provides the minimal synchronous HTTP adapter for run_agent.
+Its strict message-only request trims whitespace, limits length to 1–4000 and
+forbids extra fields. Server-side demo identity and request-scoped sessions are
+injected; authentication remains planned. Successful JSON uses `type="answer"`
+with text or `type="proposal"` with the existing structured human-review result.
+Pending/clarification status stays explicit, and Decimal weights serialize as
+strings. The route owns one transaction and closes the LLM client before commit;
+it returns success only after commit. Settings are loaded lazily. Fixed HTTP
+errors handle provider/network/agent/configuration/commit failures without raw
+diagnostics. The existing 30-second SDK timeout is not an overall conversation
+deadline; automatic retries remain disabled. Chat cannot confirm or execute
+workouts, including proposals already confirmed through a trusted backend action.
+No HTTP confirmation action, conversation persistence or UI is added.
+
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
 - A write operation (including workout logging/editing) needs explicit user confirmation.
