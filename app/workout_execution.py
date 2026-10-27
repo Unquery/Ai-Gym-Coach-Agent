@@ -1,9 +1,10 @@
 """Execute owner-scoped, explicitly confirmed workout snapshots atomically."""
 
 from decimal import Decimal
+from typing import cast
 from uuid import UUID
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import Table, insert, select, update
 from sqlalchemy.orm import Session
 
 from app.models import Exercise, Workout, WorkoutProposalRecord, WorkoutSet
@@ -66,13 +67,15 @@ def execute_confirmed_workout(
             ):
                 raise ProposalCatalogChangedError("Proposal exercise catalog has changed")
 
-            workouts = Workout.__table__
+            workouts = cast(Table, Workout.__table__)
             workout_id = session.execute(
                 insert(workouts).values(user_id=user_id).returning(workouts.c.id)
             ).scalar_one()
             for values in build_workout_set_values(proposal.payload):
-                session.execute(insert(WorkoutSet.__table__).values(workout_id=workout_id, **values))
-            proposals = WorkoutProposalRecord.__table__
+                session.execute(insert(cast(Table, WorkoutSet.__table__)).values(
+                    workout_id=workout_id, **values,
+                ))
+            proposals = cast(Table, WorkoutProposalRecord.__table__)
             session.execute(
                 update(proposals).where(
                     proposals.c.id == proposal_id, proposals.c.user_id == user_id,

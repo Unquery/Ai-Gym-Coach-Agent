@@ -1,7 +1,7 @@
 """Persist proposal snapshots and human decisions; never execute workout writes."""
 
 from datetime import datetime, timedelta
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, cast
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -12,7 +12,7 @@ from pydantic import (
     StringConstraints,
     model_validator,
 )
-from sqlalchemy import RowMapping, func, insert, select, update
+from sqlalchemy import RowMapping, Table, func, insert, select, update
 from sqlalchemy.orm import Session
 
 from app.models import WorkoutProposalRecord
@@ -104,7 +104,7 @@ def create_workout_proposal(
     ):
         raise ValueError("Only complete proposals awaiting confirmation can be stored")
     payload = WorkoutProposalPayload.model_validate(proposal.model_dump(include={"sets"}))
-    table = WorkoutProposalRecord.__table__
+    table = cast(Table, WorkoutProposalRecord.__table__)
     with session.no_autoflush:
         now = session.execute(select(func.clock_timestamp())).scalar_one()
         record = session.execute(
@@ -129,7 +129,7 @@ def _locked_record(session: Session, proposal_id: UUID, user_id: UUID) -> RowMap
 def _close_record(
     session: Session, record: RowMapping, state: ProposalState, now: datetime
 ) -> StoredWorkoutProposal:
-    table = WorkoutProposalRecord.__table__
+    table = cast(Table, WorkoutProposalRecord.__table__)
     updated = session.execute(
         update(table).where(
             table.c.id == record["id"], table.c.user_id == record["user_id"],
