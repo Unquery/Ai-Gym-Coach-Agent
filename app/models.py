@@ -1,9 +1,9 @@
-"""Workout templates and performed sets; all weights are external load in kg."""
+"""Workout storage and conversation history; weights are external load in kg."""
 
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     CheckConstraint,
@@ -13,6 +13,7 @@ from sqlalchemy import (
     Index,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     and_,
     func,
@@ -112,7 +113,9 @@ class Workout(Base):
     sets: Mapped[list["WorkoutSet"]] = relationship(
         back_populates="workout",
         order_by=lambda: (
-            WorkoutSet.position.asc().nulls_last(), WorkoutSet.exercise_id, WorkoutSet.set_number
+            WorkoutSet.position.asc().nulls_last(),
+            WorkoutSet.exercise_id,
+            WorkoutSet.set_number,
         ),
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -123,7 +126,9 @@ class WorkoutSet(Base):
     __tablename__ = "workout_sets"
     __table_args__ = (
         UniqueConstraint("workout_id", "exercise_id", "set_number"),
-        UniqueConstraint("workout_id", "position", name="uq_workout_sets_workout_position"),
+        UniqueConstraint(
+            "workout_id", "position", name="uq_workout_sets_workout_position"
+        ),
         CheckConstraint("position > 0", name="positive_position"),
         CheckConstraint("set_number > 0", name="positive_set_number"),
         CheckConstraint("reps > 0", name="positive_reps"),
@@ -154,7 +159,8 @@ class WorkoutProposalRecord(Base):
     __table_args__ = (
         UniqueConstraint("workout_id"),
         ForeignKeyConstraint(
-            ["workout_id", "user_id"], ["workouts.id", "workouts.user_id"],
+            ["workout_id", "user_id"],
+            ["workouts.id", "workouts.user_id"],
             ondelete="RESTRICT",
         ),
         CheckConstraint(
@@ -181,3 +187,46 @@ class WorkoutProposalRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+    __table_args__ = (
+        Index("ix_conversations_user_id_created_at", "user_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID]
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="conversation",
+        order_by="Message.position",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class Message(Base):
+    __tablename__ = "messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "position"),
+        CheckConstraint("position > 0", name="positive_position"),
+        CheckConstraint("role IN ('user', 'assistant')", name="valid_role"),
+        CheckConstraint("content ~ '[^[:space:]]'", name="content_not_blank"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE")
+    )
+    position: Mapped[int]
+    role: Mapped[str] = mapped_column(String(9))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    conversation: Mapped[Conversation] = relationship(back_populates="messages")

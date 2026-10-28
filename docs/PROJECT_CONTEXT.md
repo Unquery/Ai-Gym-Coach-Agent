@@ -223,6 +223,18 @@ errors return controlled 503 responses and roll back the entire action. Invalid
 UUIDs/bodies return 422. PostgreSQL API tests cover repeats, conflicting/concurrent
 decisions, ownership, expiry, forbidden edits and insert/commit failure recovery.
 
+## Conversation storage (Milestone 6)
+
+Milestone 5 workout logging and explicit human confirmation are complete.
+Milestone 6 begins with PostgreSQL conversation persistence: revision `0004`
+adds owner-bound `Conversation` records and ordered `Message` records without
+changing workout tables. Messages contain user/assistant text; explicit positive
+positions preserve order independently of timestamps. Ownership is inherited
+through the conversation and must be checked by future access operations.
+The storage schema is not yet used by `/agent/chat`: history/context loading,
+structured proposal responses, tool-call traces, and multi-turn LLM integration
+remain separate tasks. See [DATABASE.md](DATABASE.md#conversation-history).
+
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
 - A write operation (including workout logging/editing) needs explicit user confirmation.

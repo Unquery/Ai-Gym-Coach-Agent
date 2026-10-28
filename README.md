@@ -417,8 +417,9 @@ identity injection. LLM settings are loaded only for validated chat requests;
 `/health` and application import do not require them. The LLM client is closed
 before the transaction commits. An answer/proposal is returned only after commit
 succeeds; any exception rolls back that transaction, including commit-time failure.
-Each request is one independent agent conversation; no streaming or conversation
-storage is introduced.
+Each request still starts an independent agent conversation. Revision `0004` adds
+conversation/message storage models, but chat does not read or write them yet.
+Streaming and history/context loading remain separate tasks.
 
 Errors use fixed `{"detail":"..."}` messages without provider bodies, keys, SQL
 or tracebacks: 504 for SDK timeouts; 502 for other provider failures or `AgentError`

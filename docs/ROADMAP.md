@@ -1,5 +1,12 @@
 # Roadmap
 
+Current milestone: **6 — Conversation Memory & Multi-Turn AI Agent**.
+Milestone 5 workout logging and explicit human confirmation are complete.
+The first Milestone 6 task adds conversation/message models and migration `0004`,
+with PostgreSQL constraints and workout-data preservation tests. Context loading
+and multi-turn agent integration follow as separately agreed tasks. The original
+phase list below groups broader workstreams, including deferred planning and security.
+
 - [x] Phase 0 (Milestone 1) — Confirm MVP, Python/uv environment, minimal FastAPI health endpoint, README, and pytest setup.
 - [x] Phase 1 (Milestone 2) — Define workout/exercise/set/plan schema and PostgreSQL persistence; add Alembic migrations, synthetic seed, and relationship tests.
 - [x] Phase 2 (Milestone 3) — Exercise catalog reads/creation, workout/set creation, workout details and paginated history; owner filtering, input validation, and PostgreSQL-backed API tests.
