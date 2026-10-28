@@ -409,3 +409,285 @@ def test_chat_commit_failure_rolls_back_pending_proposal_before_reporting_succes
         )
         assert session.scalar(select(func.count()).select_from(Workout)) == 0
         assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+
+
+@pytest.mark.postgres
+def test_chat_history_tool_reads_the_server_owned_workout(
+    postgres_chat: tuple[ChatContext, int, UUID],
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+
+    created = api.post("/workouts", json={})
+    assert created.status_code == 201
+
+    responses.extend(
+        [
+            completion_response(
+                tool_name="get_recent_workouts",
+                arguments={"limit": 5, "offset": 0},
+            ),
+            completion_response("Synthetic history answer"),
+        ]
+    )
+
+    response = api.post(
+        "/agent/chat",
+        json={"message": "Show my recent workouts"},
+    )
+
+    assert response.status_code == 200
+
+    response_json = response.json()
+
+    assert response_json == {"type": "answer", "message": "Synthetic history answer"}
+
+    assert len(requests) == 2
+
+    tool_message = requests[1]["messages"][-1]
+    assert tool_message["role"] == "tool"
+
+    tool_rows = json.loads(tool_message["content"])
+
+    assert len(tool_rows) == 1
+    assert tool_rows[0]["id"] == created.json()["id"]
+    assert tool_rows[0]["user_id"] == str(owner)
+
+    resp = api.get("/workouts")
+
+    assert resp.status_code == 200
+    assert resp.json() == [created.json()]
+
+
+@pytest.fixture
+def pending_logging_chat(
+    postgres_engine: Engine,
+    postgres_chat: tuple[ChatContext, int, UUID],
+) -> tuple[ChatContext, UUID, UUID, list[tuple[int, int, int, str]]]:
+    context, pull_up_id, owner = postgres_chat
+    api, requests, responses, clients = context
+    with Session(postgres_engine) as session, session.begin():
+        squat = Exercise(name="Synthetic chat squat")
+        session.add(squat)
+        session.flush()
+        squat_id = squat.id
+
+    expected_sets = [
+        (pull_up_id, 1, 6, "0.00"),
+        (squat_id, 1, 8, "20.25"),
+        (pull_up_id, 2, 5, "2.50"),
+    ]
+    responses.append(completion_response(
+        "The workout has already been saved!",
+        tool_name="propose_workout_logging",
+        arguments={"sets": [
+            {"exercise_name": "Synthetic chat pull-up", "reps": 6, "weight_kg": "0.00"},
+            {"exercise_name": "Synthetic chat squat", "reps": 8, "weight_kg": "20.25"},
+            {"exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": "2.50"},
+        ]},
+    ))
+    proposed = api.post("/agent/chat", json={"message": (
+        "Log these performed sets in order: Synthetic chat pull-up, 6 reps without "
+        "extra weight; Synthetic chat squat, 8 reps at 20.25 kg; "
+        "Synthetic chat pull-up, 5 reps with 2.50 kg extra weight."
+    )})
+    assert proposed.status_code == 200
+    body = proposed.json()
+    assert set(body) == {"type", "proposal"} and body["type"] == "proposal"
+    proposal = body["proposal"]
+    assert proposal["status"] == "awaiting_confirmation"
+    assert proposal["requires_confirmation"] is True and proposal["issues"] == []
+    assert [
+        (item["exercise_id"], item["set_number"], item["reps"], item["weight_kg"])
+        for item in proposal["sets"]
+    ] == expected_sets
+    proposal_id = UUID(proposal["proposal_id"])
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.user_id == owner
+        assert stored.state == "pending" and stored.workout_id is None
+        assert stored.resolved_at is None
+        assert [
+            (item["exercise_id"], item["set_number"], item["reps"], item["weight_kg"])
+            for item in stored.payload["sets"]
+        ] == expected_sets
+        assert session.scalar(select(func.count()).select_from(WorkoutProposalRecord)) == 1
+        assert session.scalar(select(func.count()).select_from(Workout)) == 0
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+    assert len(requests) == 1 and responses == [] and clients[0].is_closed
+    return context, proposal_id, owner, expected_sets
+
+
+@pytest.mark.postgres
+def test_chat_proposal_confirmation_preserves_sets_and_feeds_read_only_progress(
+    postgres_engine: Engine,
+    pending_logging_chat: tuple[ChatContext, UUID, UUID, list[tuple[int, int, int, str]]],
+) -> None:
+    (api, requests, responses, clients), proposal_id, owner, expected_sets = pending_logging_chat
+    confirmed = api.post(f"/workout-proposals/{proposal_id}/confirm")
+    assert confirmed.status_code == 200
+    confirmation = confirmed.json()
+    workout_id = confirmation["workout_id"]
+    assert workout_id > 0
+    assert confirmation == {
+        "proposal_id": str(proposal_id), "state": "confirmed", "workout_id": workout_id,
+    }
+    detail = api.get(f"/workouts/{workout_id}")
+    assert detail.status_code == 200
+    workout = detail.json()
+    assert workout["user_id"] == str(owner) and workout["plan_id"] is None
+    assert [
+        (item["exercise_id"], item["set_number"], item["reps"], item["weight_kg"])
+        for item in workout["sets"]
+    ] == expected_sets
+    set_ids = [item["id"] for item in workout["sets"]]
+    assert len(set(set_ids)) == 3
+
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == "confirmed"
+        assert stored.workout_id == workout_id and stored.resolved_at is not None
+        resolved_at = stored.resolved_at
+
+    repeated = api.post(f"/workout-proposals/{proposal_id}/confirm")
+    assert repeated.status_code == 200 and repeated.json() == confirmation
+    assert api.get(f"/workouts/{workout_id}").json() == workout
+    assert len(requests) == 1  # Neither human action is an LLM request.
+
+    responses.extend([
+        completion_response(
+            tool_name="get_exercise_progress", arguments={"exercise_id": expected_sets[0][0]},
+        ),
+        completion_response("Synthetic progress answer"),
+    ])
+    progress_reply = api.post("/agent/chat", json={"message": "Show progress for my pull-ups"})
+    assert progress_reply.status_code == 200
+    assert progress_reply.json() == {"type": "answer", "message": "Synthetic progress answer"}
+    tool_message = requests[-1]["messages"][-1]
+    assert tool_message["role"] == "tool"
+    progress = json.loads(tool_message["content"])
+    assert progress["exercise_id"] == expected_sets[0][0]
+    assert progress["status"] == "insufficient_history"
+    assert len(progress["sessions"]) == 1
+    metrics = progress["sessions"][0]
+    assert metrics["workout_id"] == workout_id
+    assert metrics["set_count"] == 2 and metrics["total_reps"] == 11
+    assert metrics["max_external_weight_kg"] == "2.50"
+    assert metrics["external_volume_kg_reps"] == "12.50"
+    assert metrics["has_external_load"] is True
+    assert all(metrics[key] is None for key in (
+        "delta_set_count", "delta_total_reps", "delta_max_external_weight_kg",
+        "delta_external_volume_kg_reps",
+    ))
+
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.user_id == owner
+        assert stored.state == "confirmed" and stored.workout_id == workout_id
+        assert stored.resolved_at == resolved_at
+        rows = session.scalars(select(WorkoutSet).where(
+            WorkoutSet.workout_id == workout_id,
+        ).order_by(WorkoutSet.position)).all()
+        assert [row.id for row in rows] == set_ids
+        assert [row.position for row in rows] == [1, 2, 3]
+        assert [
+            (row.exercise_id, row.set_number, row.reps, str(row.weight_kg)) for row in rows
+        ] == expected_sets
+        assert session.scalar(select(func.count()).select_from(WorkoutProposalRecord)) == 1
+        assert session.scalar(select(func.count()).select_from(Workout)) == 1
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 3
+    assert len(requests) == 3 and responses == []
+    assert all(client.is_closed for client in clients)
+
+
+@pytest.mark.postgres
+def test_chat_proposal_rejection_prevents_workout_creation(
+    postgres_engine: Engine,
+    pending_logging_chat: tuple[ChatContext, UUID, UUID, list[tuple[int, int, int, str]]],
+) -> None:
+    (api, requests, _, _), proposal_id, owner, _ = pending_logging_chat
+    rejected = api.post(f"/workout-proposals/{proposal_id}/reject")
+    assert rejected.status_code == 200
+    assert rejected.json() == {
+        "proposal_id": str(proposal_id), "state": "rejected", "workout_id": None,
+    }
+    blocked = api.post(f"/workout-proposals/{proposal_id}/confirm")
+    assert blocked.status_code == 409
+    history = api.get("/workouts")
+    assert history.status_code == 200 and history.json() == []
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.user_id == owner
+        assert stored.state == "rejected" and stored.workout_id is None
+        assert stored.resolved_at is not None
+        assert session.scalar(select(func.count()).select_from(Workout)) == 0
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+    assert len(requests) == 1
+
+
+@pytest.mark.postgres
+def test_chat_logging_workflow_keeps_proposals_and_saved_results_owner_scoped(
+    postgres_engine: Engine,
+    pending_logging_chat: tuple[ChatContext, UUID, UUID, list[tuple[int, int, int, str]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (api, requests, responses, clients), proposal_id, owner, expected_sets = pending_logging_chat
+    foreign_owner = uuid4()
+    with monkeypatch.context() as scope:
+        scope.setitem(app.dependency_overrides, get_demo_user_id, lambda: foreign_owner)
+        for action in ("confirm", "reject"):
+            denied = api.post(f"/workout-proposals/{proposal_id}/{action}")
+            assert denied.status_code == 404
+            assert denied.json() == {"detail": "Proposal not found"}
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == "pending"
+        assert stored.user_id == owner and stored.workout_id is None
+        assert stored.resolved_at is None
+        assert session.scalar(select(func.count()).select_from(Workout)) == 0
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+
+    confirmed = api.post(f"/workout-proposals/{proposal_id}/confirm")
+    assert confirmed.status_code == 200
+    workout_id = confirmed.json()["workout_id"]
+    with monkeypatch.context() as scope:
+        scope.setitem(app.dependency_overrides, get_demo_user_id, lambda: foreign_owner)
+        for action in ("confirm", "reject"):
+            denied = api.post(f"/workout-proposals/{proposal_id}/{action}")
+            assert denied.status_code == 404
+            assert denied.json() == {"detail": "Proposal not found"}
+        detail = api.get(f"/workouts/{workout_id}")
+        assert detail.status_code == 404 and detail.json() == {"detail": "Workout not found"}
+        history = api.get("/workouts")
+        assert history.status_code == 200 and history.json() == []
+
+        # Inspect actual tool data, not the mocked assistant's final prose.
+        for name, arguments in (
+            ("get_recent_workouts", {"limit": 5, "offset": 0}),
+            ("get_exercise_progress", {"exercise_id": expected_sets[0][0]}),
+        ):
+            responses.extend([
+                completion_response(tool_name=name, arguments=arguments),
+                completion_response("Synthetic foreign-owner answer"),
+            ])
+            reply = api.post("/agent/chat", json={"message": "Show my workout data"})
+            assert reply.status_code == 200 and reply.json()["type"] == "answer"
+            tool_message = requests[-1]["messages"][-1]
+            assert tool_message["role"] == "tool"
+            result = json.loads(tool_message["content"])
+            if name == "get_recent_workouts":
+                assert result == []
+            else:
+                assert result == {
+                    "exercise_id": expected_sets[0][0], "status": "no_history", "sessions": [],
+                }
+
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.user_id == owner
+        assert stored.state == "confirmed" and stored.workout_id == workout_id
+        workout = session.get(Workout, workout_id)
+        assert workout is not None and workout.user_id == owner
+        assert session.scalar(select(func.count()).select_from(Workout)) == 1
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 3
+    assert len(requests) == 5 and responses == []
+    assert all(client.is_closed for client in clients)
