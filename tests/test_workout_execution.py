@@ -46,12 +46,16 @@ def pending_proposal(postgres_engine: Engine) -> tuple[UUID, UUID]:
             issues=[],
             sets=[
                 ProposedWorkoutSet(
-                    exercise_name=exercise.name, catalog_name=exercise.name,
-                    exercise_id=exercise.id, set_number=number, reps=reps,
+                    exercise_name=exercise.name,
+                    catalog_name=exercise.name,
+                    exercise_id=exercise.id,
+                    set_number=number,
+                    reps=reps,
                     weight_kg=Decimal(weight),
                 )
                 for exercise, number, reps, weight in [
-                    (pull_up, 1, 6, "0.00"), (squat, 1, 8, "20.25"),
+                    (pull_up, 1, 6, "0.00"),
+                    (squat, 1, 8, "20.25"),
                     (pull_up, 2, 5, "2.50"),
                 ]
             ],
@@ -62,7 +66,8 @@ def pending_proposal(postgres_engine: Engine) -> tuple[UUID, UUID]:
 
 @pytest.fixture
 def confirmed_proposal(
-    postgres_engine: Engine, pending_proposal: tuple[UUID, UUID],
+    postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID],
 ) -> tuple[UUID, UUID]:
     proposal_id, owner = pending_proposal
     with Session(postgres_engine) as session, session.begin():
@@ -71,7 +76,8 @@ def confirmed_proposal(
 
 
 def test_execution_preserves_snapshot_and_replays_without_duplicate_writes(
-    postgres_engine: Engine, confirmed_proposal: tuple[UUID, UUID],
+    postgres_engine: Engine,
+    confirmed_proposal: tuple[UUID, UUID],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     proposal_id, owner = confirmed_proposal
@@ -80,13 +86,17 @@ def test_execution_preserves_snapshot_and_replays_without_duplicate_writes(
         result = execute_confirmed_workout(proposal_id, session=session, user_id=owner)
         assert result.user_id == owner and result.plan_id is None
         assert result.started_at.utcoffset() is not None
-        assert [item.model_dump(include={"exercise_id", "set_number", "reps", "weight_kg"})
-                for item in result.sets] == [
+        assert [
+            item.model_dump(include={"exercise_id", "set_number", "reps", "weight_kg"})
+            for item in result.sets
+        ] == [
             item.model_dump(include={"exercise_id", "set_number", "reps", "weight_kg"})
             for item in before.payload.sets
         ]
         assert [item.weight_kg for item in result.sets] == [
-            Decimal("0.00"), Decimal("20.25"), Decimal("2.50"),
+            Decimal("0.00"),
+            Decimal("20.25"),
+            Decimal("2.50"),
         ]
 
     with Session(postgres_engine) as session, session.begin():
@@ -100,9 +110,14 @@ def test_execution_preserves_snapshot_and_replays_without_duplicate_writes(
         assert [item.id for item in workout.sets] == [item.id for item in result.sets]
         # Replays read the saved result even if the catalog was subsequently renamed.
         session.execute(update(Exercise).values(name=Exercise.name + " renamed"))
-        assert execute_confirmed_workout(proposal_id, session=session, user_id=owner) == result
+        assert (
+            execute_confirmed_workout(proposal_id, session=session, user_id=owner)
+            == result
+        )
         with pytest.raises(ProposalClosedError):
-            decide_workout_proposal(proposal_id, "confirm", session=session, user_id=owner)
+            decide_workout_proposal(
+                proposal_id, "confirm", session=session, user_id=owner
+            )
         assert session.scalar(select(func.count()).select_from(Workout)) == 1
         assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 3
 
@@ -121,13 +136,16 @@ def test_execution_preserves_snapshot_and_replays_without_duplicate_writes(
 
 
 def test_database_failure_on_second_set_rolls_back_workout_and_all_sets_then_allows_retry(
-    postgres_engine: Engine, confirmed_proposal: tuple[UUID, UUID],
+    postgres_engine: Engine,
+    confirmed_proposal: tuple[UUID, UUID],
 ) -> None:
     proposal_id, owner = confirmed_proposal
     with postgres_engine.begin() as connection:
-        connection.execute(text(
-            "ALTER TABLE workout_sets ADD CONSTRAINT test_reject_second_set CHECK (reps <> 8)"
-        ))
+        connection.execute(
+            text(
+                "ALTER TABLE workout_sets ADD CONSTRAINT test_reject_second_set CHECK (reps <> 8)"
+            )
+        )
     with pytest.raises(IntegrityError) as error:
         with Session(postgres_engine) as session, session.begin():
             execute_confirmed_workout(proposal_id, session=session, user_id=owner)
@@ -137,16 +155,23 @@ def test_database_failure_on_second_set_rolls_back_workout_and_all_sets_then_all
         assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
         stored = get_workout_proposal(proposal_id, session=session, user_id=owner)
         assert stored.state == "confirmed" and stored.workout_id is None
-        session.execute(text("ALTER TABLE workout_sets DROP CONSTRAINT test_reject_second_set"))
+        session.execute(
+            text("ALTER TABLE workout_sets DROP CONSTRAINT test_reject_second_set")
+        )
         saved = execute_confirmed_workout(proposal_id, session=session, user_id=owner)
     with Session(postgres_engine) as session, session.begin():
-        assert execute_confirmed_workout(proposal_id, session=session, user_id=owner) == saved
+        assert (
+            execute_confirmed_workout(proposal_id, session=session, user_id=owner)
+            == saved
+        )
         assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 3
 
 
 @pytest.mark.parametrize("already_executed", [False, True])
 def test_foreign_and_unknown_ids_cannot_execute_or_disclose_saved_results(
-    postgres_engine: Engine, confirmed_proposal: tuple[UUID, UUID], already_executed: bool,
+    postgres_engine: Engine,
+    confirmed_proposal: tuple[UUID, UUID],
+    already_executed: bool,
 ) -> None:
     proposal_id, owner = confirmed_proposal
     if already_executed:
@@ -157,27 +182,42 @@ def test_foreign_and_unknown_ids_cannot_execute_or_disclose_saved_results(
             with Session(postgres_engine) as session, session.begin():
                 execute_confirmed_workout(target, session=session, user_id=uuid4())
     with Session(postgres_engine) as session:
-        assert session.scalar(select(func.count()).select_from(Workout)) == int(already_executed)
-        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 3 * already_executed
+        assert session.scalar(select(func.count()).select_from(Workout)) == int(
+            already_executed
+        )
+        assert (
+            session.scalar(select(func.count()).select_from(WorkoutSet))
+            == 3 * already_executed
+        )
 
 
 @pytest.mark.parametrize("state", ["pending", "rejected", "expired"])
 def test_only_stored_human_confirmation_authorizes_execution(
-    postgres_engine: Engine, pending_proposal: tuple[UUID, UUID], state: str,
+    postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID],
+    state: str,
 ) -> None:
     proposal_id, owner = pending_proposal
     with Session(postgres_engine) as session, session.begin():
         if state == "rejected":
-            decide_workout_proposal(proposal_id, "reject", session=session, user_id=owner)
+            decide_workout_proposal(
+                proposal_id, "reject", session=session, user_id=owner
+            )
         elif state == "expired":
             now = session.scalar(select(func.clock_timestamp()))
             assert now is not None
-            session.execute(update(WorkoutProposalRecord).values(
-                created_at=now - timedelta(minutes=20), expires_at=now - timedelta(minutes=5)
-            ))
-            assert decide_workout_proposal(
-                proposal_id, "confirm", session=session, user_id=owner
-            ).state == "expired"
+            session.execute(
+                update(WorkoutProposalRecord).values(
+                    created_at=now - timedelta(minutes=20),
+                    expires_at=now - timedelta(minutes=5),
+                )
+            )
+            assert (
+                decide_workout_proposal(
+                    proposal_id, "confirm", session=session, user_id=owner
+                ).state
+                == "expired"
+            )
     with pytest.raises(ProposalNotConfirmedError):
         with Session(postgres_engine) as session, session.begin():
             execute_confirmed_workout(proposal_id, session=session, user_id=owner)
@@ -188,7 +228,9 @@ def test_only_stored_human_confirmation_authorizes_execution(
 
 @pytest.mark.parametrize("change", ["delete", "rename", "invalid_payload"])
 def test_execution_revalidates_stored_snapshot_and_catalog(
-    postgres_engine: Engine, confirmed_proposal: tuple[UUID, UUID], change: str,
+    postgres_engine: Engine,
+    confirmed_proposal: tuple[UUID, UUID],
+    change: str,
 ) -> None:
     proposal_id, owner = confirmed_proposal
     with Session(postgres_engine) as session, session.begin():
@@ -198,7 +240,9 @@ def test_execution_revalidates_stored_snapshot_and_catalog(
             session.execute(update(Exercise).values(name=Exercise.name + " renamed"))
         else:
             session.execute(update(WorkoutProposalRecord).values(payload={"sets": []}))
-    expected = ValueError if change == "invalid_payload" else ProposalCatalogChangedError
+    expected = (
+        ValueError if change == "invalid_payload" else ProposalCatalogChangedError
+    )
     with pytest.raises(expected):
         with Session(postgres_engine) as session, session.begin():
             execute_confirmed_workout(proposal_id, session=session, user_id=owner)
@@ -208,7 +252,8 @@ def test_execution_revalidates_stored_snapshot_and_catalog(
 
 
 def test_concurrent_execution_returns_the_same_single_workout(
-    postgres_engine: Engine, confirmed_proposal: tuple[UUID, UUID],
+    postgres_engine: Engine,
+    confirmed_proposal: tuple[UUID, UUID],
 ) -> None:
     proposal_id, owner = confirmed_proposal
     barrier = Barrier(2)
@@ -217,7 +262,9 @@ def test_concurrent_execution_returns_the_same_single_workout(
         with Session(postgres_engine) as session, session.begin():
             session.execute(select(1))
             barrier.wait(timeout=5)
-            return execute_confirmed_workout(proposal_id, session=session, user_id=owner).id
+            return execute_confirmed_workout(
+                proposal_id, session=session, user_id=owner
+            ).id
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(execute) for _ in range(2)]
@@ -229,23 +276,28 @@ def test_concurrent_execution_returns_the_same_single_workout(
 
 
 def test_expiration_limits_confirmation_time_not_execution_of_existing_consent(
-    postgres_engine: Engine, confirmed_proposal: tuple[UUID, UUID],
+    postgres_engine: Engine,
+    confirmed_proposal: tuple[UUID, UUID],
 ) -> None:
     proposal_id, owner = confirmed_proposal
     with Session(postgres_engine) as session, session.begin():
         now = session.scalar(select(func.clock_timestamp()))
         assert now is not None
-        session.execute(update(WorkoutProposalRecord).values(
-            created_at=now - timedelta(minutes=20), expires_at=now - timedelta(minutes=5),
-            resolved_at=now - timedelta(minutes=10),
-        ))
+        session.execute(
+            update(WorkoutProposalRecord).values(
+                created_at=now - timedelta(minutes=20),
+                expires_at=now - timedelta(minutes=5),
+                resolved_at=now - timedelta(minutes=10),
+            )
+        )
     with Session(postgres_engine) as session, session.begin():
         result = execute_confirmed_workout(proposal_id, session=session, user_id=owner)
         assert len(result.sets) == 3
 
 
 def test_executor_does_not_commit_or_flush_unrelated_orm_changes(
-    postgres_engine: Engine, confirmed_proposal: tuple[UUID, UUID],
+    postgres_engine: Engine,
+    confirmed_proposal: tuple[UUID, UUID],
 ) -> None:
     proposal_id, owner = confirmed_proposal
     with Session(postgres_engine) as session:
@@ -258,12 +310,19 @@ def test_executor_does_not_commit_or_flush_unrelated_orm_changes(
     with Session(postgres_engine) as session, session.begin():
         assert session.scalar(select(func.count()).select_from(Workout)) == 0
         assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
-        assert get_workout_proposal(proposal_id, session=session, user_id=owner).workout_id is None
+        assert (
+            get_workout_proposal(proposal_id, session=session, user_id=owner).workout_id
+            is None
+        )
 
 
-@pytest.mark.parametrize("problem", ["owner", "duplicate_link", "unconfirmed", "delete_workout"])
+@pytest.mark.parametrize(
+    "problem", ["owner", "duplicate_link", "unconfirmed", "delete_workout"]
+)
 def test_database_protects_execution_links(
-    postgres_engine: Engine, confirmed_proposal: tuple[UUID, UUID], problem: str,
+    postgres_engine: Engine,
+    confirmed_proposal: tuple[UUID, UUID],
+    problem: str,
 ) -> None:
     proposal_id, owner = confirmed_proposal
     with Session(postgres_engine) as session, session.begin():
@@ -273,35 +332,57 @@ def test_database_protects_execution_links(
             if problem == "owner":
                 session.execute(update(WorkoutProposalRecord).values(user_id=uuid4()))
             elif problem == "duplicate_link":
-                stored = get_workout_proposal(proposal_id, session=session, user_id=owner)
+                stored = get_workout_proposal(
+                    proposal_id, session=session, user_id=owner
+                )
                 table = WorkoutProposalRecord.__table__
                 record = session.execute(select(table)).mappings().one()
-                session.execute(table.insert().values(**{
-                    **record, "id": uuid4(), "workout_id": stored.workout_id,
-                }))
+                session.execute(
+                    table.insert().values(
+                        **{
+                            **record,
+                            "id": uuid4(),
+                            "workout_id": stored.workout_id,
+                        }
+                    )
+                )
             elif problem == "unconfirmed":
-                session.execute(update(WorkoutProposalRecord).values(state="pending", resolved_at=None))
+                session.execute(
+                    update(WorkoutProposalRecord).values(
+                        state="pending", resolved_at=None
+                    )
+                )
             else:
                 session.execute(delete(Workout).where(Workout.id == result.id))
 
 
 @pytest.mark.parametrize("position", [0, 1])
 def test_database_rejects_nonpositive_or_duplicate_global_positions(
-    postgres_engine: Engine, confirmed_proposal: tuple[UUID, UUID], position: int,
+    postgres_engine: Engine,
+    confirmed_proposal: tuple[UUID, UUID],
+    position: int,
 ) -> None:
     proposal_id, owner = confirmed_proposal
     with Session(postgres_engine) as session, session.begin():
         result = execute_confirmed_workout(proposal_id, session=session, user_id=owner)
     with pytest.raises(IntegrityError):
         with Session(postgres_engine) as session, session.begin():
-            session.execute(update(WorkoutSet).where(
-                WorkoutSet.id == result.sets[1].id,
-            ).values(position=position))
+            session.execute(
+                update(WorkoutSet)
+                .where(
+                    WorkoutSet.id == result.sets[1].id,
+                )
+                .values(position=position)
+            )
 
 
-@pytest.mark.parametrize("tool_name", ["execute_confirmed_workout", "build_workout_set_values"])
+@pytest.mark.parametrize(
+    "tool_name", ["execute_confirmed_workout", "build_workout_set_values"]
+)
 def test_executor_is_not_an_llm_tool(tool_name: str) -> None:
-    assert tool_name not in {item["function"]["name"] for item in get_read_only_tool_schemas()}
+    assert tool_name not in {
+        item["function"]["name"] for item in get_read_only_tool_schemas()
+    }
     session = Mock(spec=Session)
     with pytest.raises(ValueError, match="Unknown read-only tool"):
         execute_read_only_tool(tool_name, "{}", session=session, user_id=uuid4())
