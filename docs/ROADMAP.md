@@ -1,55 +1,52 @@
 # Roadmap
 
-Current milestone: **6 — Conversation Memory & Multi-Turn AI Agent**.
-Milestone 5 workout logging and explicit human confirmation are complete.
-The first Milestone 6 task adds conversation/message models and migration `0004`,
-with PostgreSQL constraints and workout-data preservation tests. Context loading
-and multi-turn agent integration follow as separately agreed tasks. The original
-phase list below groups broader workstreams, including deferred planning and security.
+Current milestone: **6 — Conversation Memory & Multi-Turn AI Agent (in progress)**.
+Milestones 1–5 are complete for the scope below. This milestone list replaces the
+earlier zero-based phase numbering, which mixed completed work with future scope.
 
-- [x] Phase 0 (Milestone 1) — Confirm MVP, Python/uv environment, minimal FastAPI health endpoint, README, and pytest setup.
-- [x] Phase 1 (Milestone 2) — Define workout/exercise/set/plan schema and PostgreSQL persistence; add Alembic migrations, synthetic seed, and relationship tests.
-- [x] Phase 2 (Milestone 3) — Exercise catalog reads/creation, workout/set creation, workout details and paginated history; owner filtering, input validation, and PostgreSQL-backed API tests.
-- [ ] Phase 3 (Milestone 4) — Finish the AI agent with provider-independent LLM integration, read-only tools, and a bounded agent loop.
-- [ ] Phase 4 — Deterministic workout statistics and progress analysis, with tested Python/SQL calculations exposed through read tools.
-- [ ] Phase 5 — Workout planning and safe write tools with explicit confirmation, validation, and user-scoped access.
-- [ ] Phase 6 — Authentication, security hardening, error handling, agent evaluations, mocked-tool tests, and observability.
-- [ ] Phase 7 — Docker deployment and full backend MVP verification; finalize README, architecture diagram, demo, and interview materials.
-- [ ] Phase 8 (after backend MVP verification) — Start frontend development; prefer an Android application using Kotlin and Jetpack Compose.
+## Milestone status
 
-Complete and verify the entire backend MVP before starting any frontend or
-mobile application development. Keep the backend API-first and client-independent;
-agent and database layers must not contain frontend-specific logic. Ownership,
-validation, transaction safety, and error handling remain requirements throughout
-development; Phase 6 extends and verifies them.
+| Milestone | Status | Implemented scope and available verification |
+| --- | --- | --- |
+| 1 — Application foundation | Complete | Python/uv, locked dependencies, FastAPI/Uvicorn, `GET /health`; HTTP contract tests and recorded local HTTP smoke verification. |
+| 2 — PostgreSQL persistence | Complete | Workout/catalog models, Alembic `0001`, database-only Docker Compose, restricted app role, synthetic seed; PostgreSQL persistence, constraints, and migration tests. |
+| 3 — Workout HTTP APIs | Complete | Exercise reads/creation, workout/set creation, workout details/history, validation and owner filtering; PostgreSQL-backed API tests and recorded local HTTP verification. |
+| 4 — LLM and read-only agent | Complete | Configurable OpenAI-compatible client, bounded tool-calling loop, `get_recent_workouts`, and deterministic `get_exercise_progress`; mocked LLM/PostgreSQL tests and recorded synthetic Groq history/progress scenarios. |
+| 5 — Confirmed workout logging | Complete | Catalog-validated proposals, PostgreSQL lifecycle, atomic/idempotent workout execution, chat and confirm/reject HTTP routes; mocked-provider PostgreSQL workflow tests and recorded live Groq logging followed by separate human HTTP confirmation. |
+| 6 — Conversation Memory & Multi-Turn AI Agent | In progress | Conversation/message models and additive Alembic `0004` are implemented and PostgreSQL-tested. Chat persistence, context loading, and multi-turn integration are not implemented. |
 
-Milestone 4 foundations are implemented: the typed `get_recent_workouts` tool,
-the configurable OpenAI-compatible LLM client, and the first bounded read-only
-tool-calling workflow with explicit dispatch and mocked LLM tests.
+"Tested" refers to available recorded runs, not a new run during the documentation
+audit. "Live-verified" refers only to the recorded, explicitly authorized synthetic
+scenarios; it does not establish general model reliability or production readiness.
+See [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md#verification-status) for evidence and limits.
 
-The first pure exercise-progress calculation is implemented: per-session metrics
-and absolute changes. The read-only `get_exercise_progress` tool exposes it through
-owner-scoped database retrieval, optional time bounds, and explicit missing-data
-statuses. It is registered in the bounded agent workflow with mocked LLM tests.
+## Milestone 6 remaining work
 
-The first logging proposal step now produces validated, unsaved drafts with
-catalog resolution and human-review status. PostgreSQL-backed proposal storage
-now binds an immutable snapshot to its owner and enforces pending/confirmed/
-rejected/expired states, expiration, and replay protection. A separate server-side
-executor now atomically persists confirmed workouts and ordered sets, with owner
-checks, catalog revalidation, and idempotent concurrent/repeated execution.
-The agent now exposes pending proposal creation alongside its read tools, with
-Pydantic validation, catalog resolution, and a typed handoff for human review.
-`POST /agent/chat` exposes this workflow with a strict message-only request,
-tagged JSON responses, server-selected identity, and controlled failures.
-Separate human-action confirm/reject HTTP routes now reuse the proposal services.
-Confirmation and workout persistence commit atomically; same-action retries are
-idempotent, conflicting decisions fail, and expiration/ownership remain enforced.
-Confirmation and workout execution are never exposed as LLM tools.
+- [x] Add `Conversation` and ordered `Message` models, relationships, database constraints, migration `0004`, and PostgreSQL preservation tests.
+- [ ] Add owner-scoped conversation/message access and concurrency-safe position allocation.
+- [ ] Extend the chat contract to identify a conversation and persist turns transactionally.
+- [ ] Load bounded conversation history into subsequent agent runs; preserve existing tool-call and consent boundaries.
+- [ ] Decide how structured proposal results are represented across turns; the initial message schema stores user/assistant text only.
+- [ ] Add mocked-LLM/PostgreSQL multi-turn tests for isolation, ordering, failures, and confirmation safety.
+- [ ] Complete an explicitly authorized end-to-end multi-turn verification before closing the milestone.
 
-Deterministic progress statistics are outside the completed Milestone 3 API
-scope. Implement and test each calculation before exposing its corresponding
-progress-analysis tool to the LLM.
+Each item is a separate incremental task requiring agreement before implementation.
+No vector database, embeddings, or RAG are part of this milestone. The existence
+of migration `0004` does not mean it has been applied to an existing demo database.
+
+## Remaining backend priorities
+
+Workout planning and plan-retrieval tools remain planned despite the existing
+plan tables. Exercise-name lookup for progress and automatic relative-date context
+are not implemented. Authentication, deployment role separation, broader security
+hardening, systematic agent evaluations, and observability remain future work;
+existing validation, owner filtering, and mocked safety tests already exist.
+
+Docker Compose currently runs PostgreSQL only. Application containerization,
+complete backend deployment verification, and final portfolio/demo materials
+remain planned. Complete and verify the API-first, client-independent backend
+MVP before frontend/mobile development; the preferred later client remains
+Android with Kotlin and Jetpack Compose.
 
 ## Definition of backend MVP done
 

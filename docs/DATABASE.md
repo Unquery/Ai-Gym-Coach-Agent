@@ -1,8 +1,10 @@
-# Workout storage
+# Database storage
 
-Milestone 2 uses synchronous SQLAlchemy 2 sessions, psycopg 3, PostgreSQL 17,
-and Alembic. The application remains API-first; this milestone adds storage
-without exposing workout HTTP endpoints or integrating an LLM.
+Storage uses synchronous SQLAlchemy 2 sessions, psycopg 3, PostgreSQL 17,
+and Alembic. Migration head `0004` defines eight tables for workout/catalog data,
+proposal consent/execution, and conversation history. Workout HTTP APIs and the
+bounded LLM agent are implemented; conversation storage is not yet connected to
+HTTP chat. See [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) for application boundaries.
 
 ## Tables and relationships
 
@@ -13,6 +15,7 @@ erDiagram
     workout_plans o|--o{ workouts : inspires
     workouts ||--o{ workout_sets : contains
     exercises ||--o{ workout_sets : records
+    workouts o|--o| workout_proposals : executes
     conversations ||--o{ messages : orders
 ```
 
@@ -55,18 +58,20 @@ assigning a plan must not silently replace the workout's owner.
 
 Sets inherit ownership through their workout; plan entries inherit it through
 their plan. Exercises are shared catalog records. These constraints do not
-authorize reads: future API queries must filter by the authenticated `user_id`,
-including when looking up sets through their workout. Never trust an arbitrary
-caller-provided owner UUID as authentication. No arbitrary SQL tool is exposed.
+authorize reads: existing workout/proposal queries filter by a server-selected
+demo owner, and future conversation operations must check that owner too.
+Real authentication must eventually supply the trusted `user_id`. Never trust an
+arbitrary caller-provided owner UUID as authentication. No arbitrary SQL tool is exposed.
 
 Deleting a workout cascades to its sets. Deleting an unused plan cascades to its
 entries. A plan referenced by historical workouts cannot be deleted until it is
 explicitly detached; ORM deletion must not detach it implicitly. Referenced
-exercises cannot be deleted. No deletion endpoint is provided in this milestone.
+exercises cannot be deleted. No deletion endpoints are currently implemented.
 
 Indexes support owner/date history lookups and per-exercise history. The unique
-set index also supports retrieving all sets for a workout. Keep aggregate
-statistics and fitness calculations in deterministic code in a later milestone.
+set index also supports retrieving all sets for a workout. Exercise statistics
+are implemented through owner-scoped reads in `app.queries` and deterministic
+Decimal calculations in `app.progress`, exposed by `get_exercise_progress`.
 
 ## Configuration, transactions, and migrations
 
@@ -79,9 +84,9 @@ SQL parameter values are hidden in engine error diagnostics.
 Use `create_db_engine()` and a SQLAlchemy `Session`. The caller owns transaction
 boundaries: `with Session(engine) as session, session.begin(): ...` commits on
 success and rolls back on failure. Treat a multi-set workout as a transaction.
-Only report storage success after the commit succeeds. Future AI-proposed
-changes will still need explicit user confirmation before entering that write
-transaction.
+Only report storage success after the commit succeeds. AI-proposed workout
+writes already require a separate explicit human confirmation action; the chat
+agent can store pending proposals but cannot confirm or execute workouts.
 
 Alembic revision `0001` creates the five workout/catalog tables and constraints;
 revision `0002` adds the proposal table, and `0003` adds the execution link and
@@ -115,11 +120,15 @@ success after commit. Row locks serialize decisions; PostgreSQL wall-clock time
 is read after acquiring the lock. A pending record expires at the deadline,
 including during a lock wait. Expiration is persisted lazily by reads/decisions;
 it needs no background worker. Confirmed/rejected/expired records remain terminal
-and retain the original snapshot. No snapshot-edit operation is exposed.
+and retain the original snapshot. The low-level decision function rejects
+repeated terminal decisions; HTTP confirm/reject returns the existing result for
+the same decision and rejects an opposite decision. No snapshot-edit operation is exposed.
 
-Confirmation records consent only: no workout or set is created. These server
-functions are not LLM tools. Snapshots intentionally have no exercise FKs that
-could delete or rewrite historical consent.
+The low-level store records consent only; it never creates a workout or set.
+The HTTP confirm route combines that decision with the executor below in one
+transaction, committing consent and workout data together. Reject creates no
+workout. These store/executor functions are not LLM tools. Snapshots intentionally
+have no exercise FKs that could delete or rewrite historical consent.
 
 ## Atomic execution and idempotency
 
@@ -134,14 +143,16 @@ prevent rename/delete races. A mismatch requires a new proposal and consent.
 The executor creates one unplanned workout, all ordered sets, and the proposal's
 execution link in the caller's single transaction, using Core DML with autoflush
 disabled. Errors must propagate out of `session.begin()` so all changes roll back;
-only report success after commit. No LLM request or authorization is involved.
+only report success after commit. No LLM request is made; execution requires
+existing explicit consent and the trusted server-selected owner.
 
 The nullable unique proposal `workout_id` is the durable execution marker. A
 composite FK to `workouts(id, user_id)` enforces equal ownership, and a check
 requires linked proposals to be confirmed. `ON DELETE RESTRICT` protects linked
 workouts from deletion while referenced. Concurrent executions serialize on the
 proposal lock; later calls return the existing owner-scoped workout and ordered
-sets. Existing lifecycle decisions remain terminal and cannot be replayed.
+sets. Repeated confirmation returns this existing execution without changing
+the terminal consent state or creating duplicate workouts.
 
 ## Conversation history
 

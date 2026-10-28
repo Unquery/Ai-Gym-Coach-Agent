@@ -4,23 +4,38 @@
 AI Gym Coach Agent: a conversational training-log and progress-analysis assistant, built as a portfolio project for a Junior AI Engineer application.
 
 ## MVP user journeys
-1. "I'm at the gym. What am I training today?" — get a proposed session based on program and recent logs.
-2. "I did 3 sets of squats: 12, 10, 10 at 30 kg." — parse and preview the entries, ask for confirmation, then store them.
-3. "Show my pull-up progress in the past month." — retrieve entries, calculate accurate metrics, summarize trends without fabricating data.
-4. "What did I train last time?" — retrieve workout history.
+1. "I'm at the gym. What am I training today?" — planned: suggest a session from a program and recent logs; plan tables exist, but planning tools do not.
+2. "I did 3 sets of squats: 12, 10, 10 at 30 kg." — implemented: parse and preview, store a pending proposal, then persist a workout only after a separate explicit confirmation action.
+3. "Show my pull-up progress in the past month." — implemented with an explicit exercise ID and optional timezone-aware date bounds: deterministic metrics and missing-data statuses. Exercise-name lookup and automatic relative-date context remain planned.
+4. "What did I train last time?" — implemented: retrieve owner-scoped workout metadata; the workout detail API returns performed sets.
 
-## Initial engineering direction
-Python 3.12+, FastAPI, PostgreSQL, SQLAlchemy, Pydantic, pytest, Docker Compose. A tool-calling LLM agent; optional orchestration framework only if needed. Complete the API-first, client-independent backend MVP before starting any frontend or mobile application development.
+## Current architecture
+Python 3.12+, FastAPI, synchronous SQLAlchemy 2/psycopg 3, PostgreSQL 17,
+Alembic, Pydantic, pytest, and uv. The OpenAI SDK Chat Completions client is
+configured for an OpenAI-compatible provider; Groq has recorded live verification,
+while local Ollama configuration is documented but not live-verified.
+The agent loop is explicit Python; no orchestration framework is installed.
+Docker Compose currently runs the database only.
+
+| Boundary | Implementation |
+| --- | --- |
+| HTTP and transactions | `app.main`, `app.schemas`, `app.agent_schemas`; request-scoped sessions and server-selected demo identity. |
+| Agent and provider | `app.agent`, `app.llm`, `app.llm_config`; bounded runs, typed responses, no implicit cross-request history. |
+| Tool authorization and validation | `app.tool_dispatch`, `app.tool_schemas`, `app.tools`; two read tools and pending proposal creation only. |
+| Deterministic reads/calculations | `app.queries`, `app.progress`; owner-filtered SQL and Decimal metrics. |
+| Workout proposals and consent | `app.workout_proposals`, `app.proposal_store`, `app.workout_execution`; catalog resolution, immutable snapshots, row locks, atomic confirmed writes. |
+| Storage | `app.database`, `app.models`, Alembic `0001`–`0004`; eight tables at migration head. Conversation storage is not yet connected to chat. |
+
+Complete the API-first, client-independent backend MVP before starting frontend
+or mobile application development.
 
 ## Development priorities
 
-1. Finish the AI agent with provider-independent LLM integration.
-2. Implement read tools and a bounded agent loop.
-3. Add deterministic workout statistics and progress analysis using tested Python/SQL calculations.
-4. Add workout planning and safe write tools with explicit user confirmation.
-5. Add authentication, security hardening, error handling, and agent evaluations; maintain existing ownership and validation guarantees throughout development.
-6. Prepare Docker deployment and verify the complete backend MVP end to end.
-7. Only after backend MVP verification, start frontend development, preferably an Android application using Kotlin and Jetpack Compose.
+1. Complete Milestone 6 incrementally: owner-scoped conversation access, safe message ordering, chat persistence, bounded context loading, and multi-turn tests/integration.
+2. Add workout planning and plan-retrieval tools; retain explicit human confirmation for AI-proposed workout writes.
+3. Add real authentication, deployment role separation, broader security hardening, systematic evaluations, and observability. Existing error handling and safety tests must be preserved.
+4. Prepare application Docker deployment and verify the complete backend MVP end to end.
+5. Only after backend MVP verification, start frontend development, preferably an Android application using Kotlin and Jetpack Compose.
 
 Keep frontend-specific behavior in client applications; agent and database layers
 remain client-independent. Expose backend capabilities through stable API
@@ -40,8 +55,9 @@ single-session templates; actual sets are independent historical facts. Owner UU
 anticipate authentication without introducing a users service. A composite FK
 prevents cross-owner plan attachment. See [DATABASE.md](DATABASE.md) for the schema,
 transaction boundaries, and permissions. Docker Compose provides local storage;
-real PostgreSQL tests run in disposable schemas. Authentication, statistics,
-and LLM integration remain deferred.
+real PostgreSQL tests run in disposable schemas. This was the initial storage
+milestone; subsequent statistics and LLM integration are implemented below.
+Authentication remains planned.
 
 Milestone 3 is complete: exercise catalog reads/creation, workout/set creation,
 workout details with performed sets, and paginated workout history.
@@ -59,8 +75,10 @@ missing or other owners' workouts and missing exercises return 404. Database
 constraint failures are rolled back; 201 is returned only after commit.
 
 `GET /workouts/{workout_id}` returns an owner's workout and its performed sets,
-reusing the existing workout and set response fields. Sets are ordered by
-exercise ID and set number; empty workouts return an empty list. `selectinload`
+reusing the existing workout and set response fields. Sets are ordered by global
+`position` first (nulls last), then exercise ID and set number for legacy/manual
+sets. Position is internal and is not included in `WorkoutSetRead`.
+Empty workouts return an empty list. `selectinload`
 loads the collection explicitly in a second SELECT, avoiding serialization-time
 queries. Missing or other owners' workouts return 404 after a single SELECT.
 
@@ -75,15 +93,15 @@ including exercise lookup and optional workout plan input. Exercise creation
 rejects NUL characters in Pydantic validation. Invalid values return 422 before
 executing SQL instead of surfacing database errors as 500.
 
-Milestone 4 has started with the typed, read-only `get_recent_workouts` Python
-tool. `GetRecentWorkoutsInput` validates strict integer pagination with the same
+Milestone 4 is complete: the configurable LLM client and bounded read-only agent
+include `get_recent_workouts` and `get_exercise_progress` with deterministic
+statistics. `GetRecentWorkoutsInput` validates strict integer pagination with the same
 defaults/bounds as the API and rejects unknown fields. Server code supplies the
 session and owner separately; the tool returns `list[WorkoutRead]`. The HTTP
 history route and tool share an owner-filtered query in `app.queries`, with
 autoflush disabled so reads cannot flush pending changes. The tool does not
 manage transactions. Authentication remains planned.
-Statistics require tested calculations before progress-analysis tools expose
-them to the model.
+The implemented progress tool reuses tested calculations, described below.
 
 The first LLM integration uses the official OpenAI Python SDK and synchronous
 Chat Completions. GroqCloud is the initial provider; `LLM_BASE_URL` defaults to
@@ -103,12 +121,13 @@ reuses the Pydantic input schema. Python validates arguments before reads and
 supplies the server-selected owner/session outside model arguments. Assistant
 tool calls and JSON results are linked by `tool_call_id`. Invalid arguments and
 unknown names return fixed error codes without raw inputs or diagnostics.
-One conversation allows at most three LLM requests and two tool requests,
+Each agent run allows at most three LLM requests and two tool requests,
 including invalid/unknown attempts. Invalid call IDs/types, incomplete responses,
 and exhausted budgets raise `AgentError`; database failures stop with a generic
 error instead of leaking diagnostics to the model. SDK errors propagate.
-The caller owns client/session lifetime and transactions. No write tools or
-HTTP endpoint are exposed. Mocked LLM tests include a real PostgreSQL ownership
+The caller owns client/session lifetime and transactions. This read-only entry
+cannot create proposals or workouts; HTTP chat uses the separate `run_agent`
+entry described below. Mocked LLM tests include a real PostgreSQL ownership
 check in a disposable schema.
 
 Deterministic exercise calculations now live in `app.progress`.
@@ -160,12 +179,13 @@ The lifetime is 15 minutes, measured using database wall-clock time.
 
 An owner-scoped row lock protects pending -> confirmed/rejected/expired
 transitions. Time is checked after lock acquisition, including lock waits;
-expiration is recorded lazily on access. Terminal decisions cannot replay or
-change state. Unknown/foreign IDs are indistinguishable. The caller owns a
+expiration is recorded lazily on access. The low-level decision function rejects
+repeated or conflicting terminal decisions; the HTTP layer implements same-action
+replay without repeating a transition. Unknown/foreign IDs are indistinguishable. The caller owns a
 dedicated session/transaction and commits before reporting success. Core DML and
 disabled autoflush prevent store methods from flushing unrelated ORM objects.
 These functions never create workouts/sets and are not advertised to the LLM.
-Confirmed records consent only; a separate `app.workout_execution` service now
+The store records confirmed consent only; the separate `app.workout_execution` service
 executes it atomically in the caller's transaction. Revision `0003` adds a nullable
 unique execution link from proposals to same-owner workouts and nullable global
 set positions for backward compatibility. A row lock serializes execution/replay;
@@ -177,7 +197,7 @@ interleaved set order are preserved. Confirmation TTL limits consent, not later
 execution/retries. No executor is exposed to the LLM; human-action HTTP routing
 is described below, and authentication remains future work.
 
-`app.agent.run_agent` now integrates pending proposal creation alongside the two
+Milestone 5 is complete. `app.agent.run_agent` integrates pending proposal creation alongside the two
 read tools through the same bounded loop. The separate `run_read_only_agent`
 entry retains its strict read-only allowlist and text contract. The new dispatcher
 accepts only `WorkoutLoggingDraft` data for `propose_workout_logging`; Pydantic
@@ -234,6 +254,32 @@ through the conversation and must be checked by future access operations.
 The storage schema is not yet used by `/agent/chat`: history/context loading,
 structured proposal responses, tool-call traces, and multi-turn LLM integration
 remain separate tasks. See [DATABASE.md](DATABASE.md#conversation-history).
+
+## Verification status
+
+Implementation and available verification are distinct. The test modules cover
+HTTP contracts, PostgreSQL integrity/ownership/transactions, deterministic metrics,
+mocked LLM protocol handling, and safe proposal execution. Tests do not make live
+provider calls; PostgreSQL cases use disposable schemas and skip explicitly when
+`TEST_DATABASE_URL` is absent.
+
+Recorded runs include a 453-test PostgreSQL-enabled full suite at the HTTP decision
+stage, 167 targeted agent/chat/execution/tool tests after the final Milestone 5
+prompt clarification, and 123 targeted PostgreSQL tests for conversation storage
+at commit `ad650e5`. These are historical results at their respective snapshots,
+not a claim that the full suite was rerun at the current head.
+
+Separately authorized synthetic Groq scenarios verified history retrieval,
+deterministic exercise progress, and HTTP workout proposal creation. The successful
+logging proposal was separately approved and confirmed through HTTP; a fresh
+database read verified the saved workout and ordered exact set values. Confirmation
+made no LLM request. Earlier live extraction failures motivated the existing prompt
+clarifications; successful scenarios do not guarantee arbitrary extraction fidelity.
+
+Conversation models/migration are PostgreSQL-tested, but multi-turn chat is neither
+implemented nor live-verified. There is no authentication or full application
+deployment verification. No application tests or live provider calls are rerun by
+the documentation audit; existing results are retained with their scope.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

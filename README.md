@@ -2,18 +2,19 @@
 
 An AI-powered workout logging and progress analysis assistant built as a Junior AI Engineering portfolio project.
 
-**Status:** Milestone 3 complete — PostgreSQL-backed exercise and workout APIs,
-including set logging, workout details, and paginated history. Input validation
-stabilization is complete. Milestone 4 includes typed, read-only
-`get_recent_workouts` and `get_exercise_progress` tools, a provider-configurable
-LLM client, and a minimal read-only tool-calling workflow.
+**Status:** Milestones 1–5 complete; **Milestone 6 — Conversation Memory &
+Multi-Turn AI Agent** is in progress. Conversation/message models and migration
+`0004` are implemented and PostgreSQL-tested. Chat still handles independent
+requests; it does not save or load conversation history yet.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-The MVP will use Python, FastAPI, PostgreSQL, and safe LLM tool calling to retrieve training logs, suggest sessions, record confirmed sets, and calculate progress.
+The backend uses Python, FastAPI, PostgreSQL, and bounded LLM tool calling.
+It provides exercise/workout APIs, typed `get_recent_workouts` and
+`get_exercise_progress` tools, deterministic Decimal metrics, and a configurable
+OpenAI-compatible LLM client.
 
-Authentication, workout planning tools, and confirmed write tools remain planned
-for later work.
+Authentication and workout planning/plan-retrieval tools remain planned.
 The agent can also prepare catalog-validated pending workout proposals for human
 review. A PostgreSQL proposal store tracks confirmation, rejection, and expiration.
 A separate server-side executor can atomically save confirmed workouts and their
@@ -21,6 +22,13 @@ sets with replay protection. Confirmation and execution are never LLM tools.
 `POST /agent/chat` exposes answers and proposals through a typed JSON contract.
 Separate HTTP confirmation/rejection actions apply human decisions; confirmation
 and workout persistence commit atomically and retries cannot duplicate workouts.
+
+Automated tests mock LLM responses and use isolated PostgreSQL schemas. Separately
+authorized synthetic Groq scenarios verified history, progress, and HTTP logging
+followed by separate human confirmation. These scenario checks do not establish
+general model reliability. See [verification status](docs/PROJECT_CONTEXT.md#verification-status)
+for recorded test runs and limits. Compose currently runs PostgreSQL only;
+application deployment and full backend MVP verification remain planned.
 
 ## Setup (Windows PowerShell)
 
@@ -164,8 +172,10 @@ referenced record is deleted between validation and insertion.
 
 `GET /workouts/{workout_id}` returns HTTP 200 with `id`, `user_id`, `plan_id`,
 `started_at`, and `sets`. Each set has the same fields as the set-creation
-response; decimal weights remain strings. Sets are ordered by `exercise_id`,
-then `set_number`. A workout without sets returns `"sets": []`.
+response; decimal weights remain strings. Sets with a global `position` come
+first in that order; legacy/manual sets with null positions follow, ordered by
+`exercise_id`, then `set_number`. Position is internal and is not included in the
+public set response. A workout without sets returns `"sets": []`.
 
 The workout must belong to the server-selected demo owner. Missing or other
 owners' workouts return 404 with `{"detail":"Workout not found"}`. The path ID
@@ -296,7 +306,8 @@ uv run --locked pytest tests/test_llm.py tests/test_health.py -q
 uses the existing client and tools for one conversation: user request, model tool
 request, Python execution, model summary. The caller supplies the database session
 and current owner from trusted server code and owns client/session cleanup.
-The function returns the final text; no HTTP endpoint or client UI is added.
+The function returns the final text. It has no dedicated HTTP endpoint;
+`POST /agent/chat` uses the broader `run_agent` entry below. No client UI exists.
 
 `get_recent_workouts` and `get_exercise_progress` are advertised through typed
 function-tool schemas generated from their Pydantic inputs. The dispatcher
@@ -626,8 +637,9 @@ back, or flush unrelated pending ORM objects. Rollback preserves the previous
 state. These lifecycle functions only insert/update proposal records. A
 `confirmed` decision records consent; execution is a separate operation below.
 
-These functions are not registered in the LLM tool allowlist. No confirmation
-HTTP route is included in this step.
+These functions are not registered in the LLM tool allowlist. The implemented
+[decision HTTP routes](#workout-proposal-decision-http-api) wrap the store and
+executor to support atomic confirmation and same-action retries.
 
 ```powershell
 uv run --env-file .env --locked pytest tests/test_proposal_store.py tests/test_migrations.py -q
@@ -682,6 +694,22 @@ No live LLM call is needed to execute or test it.
 uv run --env-file .env --locked pytest tests/test_workout_execution.py tests/test_proposal_store.py tests/test_migrations.py -q
 ```
 
+## Conversation memory (Milestone 6)
+
+`Conversation` and `Message` in `app.models` define the initial storage layer.
+Migration `0004` adds only these two tables, leaving existing workout data intact.
+Conversations store a server-selected owner; messages reference their parent and
+have a positive position unique within that conversation. Relationships load
+messages by position, independently of timestamp ties. PostgreSQL constrains
+roles to `user`/`assistant` and rejects blank text.
+
+The schema is implemented and PostgreSQL-tested; chat persistence, owner-checked
+access operations, safe concurrent appends, bounded context loading, and multi-turn
+LLM integration remain unfinished. Raw tool-call traces and structured proposal
+responses are not stored in the initial message schema. Conversation text never
+replaces explicit workout confirmation. See [storage details](docs/DATABASE.md#conversation-history)
+and the [remaining milestone work](docs/ROADMAP.md#milestone-6-remaining-work).
+
 ## Test
 
 ```powershell
@@ -719,13 +747,17 @@ uv run --locked pytest
 ```text
 app/main.py           FastAPI routes and demo owner dependency
 app/database.py       PostgreSQL engine, request sessions, and declarative base
-app/models.py         Exercise, plan, workout, and set models
+app/models.py         Workout/catalog, proposal, conversation, and message models
 app/schemas.py        Public HTTP request and response schemas
-app/queries.py        Owner-scoped history query shared by the API and tool
+app/agent_schemas.py  Typed chat request and tagged answer/proposal responses
+app/queries.py        Owner-scoped workout history and exercise-progress reads
 app/tool_schemas.py   Validated agent-tool arguments
-app/tools.py          Typed read-only agent tools
-app/tool_dispatch.py  Explicit read-only tool allowlist and execution
+app/tools.py          Typed history/progress tools and pending proposal creation
+app/tool_dispatch.py  Separate read-only and proposal-capable allowlists
 app/agent.py          Bounded tool-calling workflow with server-selected ownership
+app/workout_proposals.py Catalog resolution and standalone LLM draft extraction
+app/proposal_store.py Immutable proposal snapshots and human consent lifecycle
+app/workout_execution.py Atomic/idempotent confirmed workout persistence
 app/progress.py       Pure exercise-session metrics and absolute changes
 app/llm_config.py     Validated LLM environment settings and masked key
 app/llm.py            Configurable OpenAI SDK client and one completion call
