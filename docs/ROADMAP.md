@@ -35,8 +35,10 @@ The agent now exposes pending proposal creation alongside its read tools, with
 Pydantic validation, catalog resolution, and a typed handoff for human review.
 `POST /agent/chat` exposes this workflow with a strict message-only request,
 tagged JSON responses, server-selected identity, and controlled failures.
-Trusted human confirmation routing remains planned; confirmation and workout
-execution are never exposed as LLM tools.
+Separate human-action confirm/reject HTTP routes now reuse the proposal services.
+Confirmation and workout persistence commit atomically; same-action retries are
+idempotent, conflicting decisions fail, and expiration/ownership remain enforced.
+Confirmation and workout execution are never exposed as LLM tools.
 
 Deterministic progress statistics are outside the completed Milestone 3 API
 scope. Implement and test each calculation before exposing its corresponding

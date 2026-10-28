@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
@@ -7,6 +8,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx2 import Response
 from sqlalchemy import Engine, delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -73,6 +75,23 @@ def confirmed_proposal(
     with Session(postgres_engine) as session, session.begin():
         decide_workout_proposal(proposal_id, "confirm", session=session, user_id=owner)
     return pending_proposal
+
+
+@pytest.fixture
+def proposal_client(
+    postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[TestClient]:
+    _, owner = pending_proposal
+    monkeypatch.setattr(database, "get_engine", lambda: postgres_engine)
+    monkeypatch.setitem(app.dependency_overrides, get_demo_user_id, lambda: owner)
+    monkeypatch.setattr(
+        "app.main.create_llm_client",
+        Mock(side_effect=AssertionError("Proposal actions must not call the LLM")),
+    )
+    with TestClient(app) as client:
+        yield client
 
 
 def test_execution_preserves_snapshot_and_replays_without_duplicate_writes(
@@ -387,3 +406,277 @@ def test_executor_is_not_an_llm_tool(tool_name: str) -> None:
     with pytest.raises(ValueError, match="Unknown read-only tool"):
         execute_read_only_tool(tool_name, "{}", session=session, user_id=uuid4())
     assert session.mock_calls == []
+
+
+def test_http_confirmation_replays_saved_workout(
+    postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proposal_id, owner = pending_proposal
+
+    monkeypatch.setattr(database, "get_engine", lambda: postgres_engine)
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_demo_user_id,
+        lambda: owner,
+    )
+
+    with TestClient(app) as client:
+        first = client.post(f"/workout-proposals/{proposal_id}/confirm")
+
+        second = client.post(f"/workout-proposals/{proposal_id}/confirm")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    first_body = first.json()
+    second_body = second.json()
+
+    assert first_body["state"] == "confirmed"
+    assert second_body["state"] == "confirmed"
+
+    assert first_body["proposal_id"] == str(proposal_id)
+    assert second_body["proposal_id"] == str(proposal_id)
+
+    assert first_body["workout_id"] > 0
+    assert first_body["workout_id"] == second_body["workout_id"]
+
+    with Session(postgres_engine) as session:
+        workout_count = session.scalar(select(func.count()).select_from(Workout))
+
+        assert workout_count == 1
+
+        workout_sets_count = session.scalar(
+            select(func.count()).select_from(WorkoutSet)
+        )
+        assert workout_sets_count == 3
+
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+
+        assert stored is not None
+        assert stored.state == "confirmed"
+        assert stored.workout_id == first_body["workout_id"]
+
+
+def test_http_rejection_replays_without_creating_workouts(
+    proposal_client: TestClient, postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID],
+) -> None:
+    proposal_id, _ = pending_proposal
+    first = proposal_client.post(f"/workout-proposals/{proposal_id}/reject", json={})
+    second = proposal_client.post(f"/workout-proposals/{proposal_id}/reject")
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json() == {
+        "proposal_id": str(proposal_id), "state": "rejected", "workout_id": None,
+    }
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == "rejected"
+        assert stored.resolved_at is not None and stored.workout_id is None
+        assert session.scalar(select(func.count()).select_from(Workout)) == 0
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+
+
+@pytest.mark.parametrize("first_action", ["confirm", "reject"])
+def test_http_opposite_decisions_cannot_change_a_closed_proposal(
+    proposal_client: TestClient, postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID], first_action: str,
+) -> None:
+    proposal_id, _ = pending_proposal
+    other_action = "reject" if first_action == "confirm" else "confirm"
+    first = proposal_client.post(f"/workout-proposals/{proposal_id}/{first_action}")
+    assert first.status_code == 200
+    with Session(postgres_engine) as session:
+        before = session.get(WorkoutProposalRecord, proposal_id)
+        assert before is not None
+        resolved_at = before.resolved_at
+    opposite = proposal_client.post(f"/workout-proposals/{proposal_id}/{other_action}")
+    assert opposite.status_code == 409
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == first.json()["state"]
+        assert stored.resolved_at == resolved_at
+        assert stored.workout_id == first.json()["workout_id"]
+        expected_workouts = int(first_action == "confirm")
+        assert session.scalar(select(func.count()).select_from(Workout)) == expected_workouts
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 3 * expected_workouts
+
+
+@pytest.mark.parametrize("action", ["confirm", "reject"])
+def test_http_expiration_is_committed_before_returning_gone(
+    proposal_client: TestClient, postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID], action: str,
+) -> None:
+    proposal_id, _ = pending_proposal
+    with Session(postgres_engine) as session, session.begin():
+        now = session.scalar(select(func.clock_timestamp()))
+        assert now is not None
+        session.execute(update(WorkoutProposalRecord).where(
+            WorkoutProposalRecord.id == proposal_id,
+        ).values(created_at=now - timedelta(minutes=20), expires_at=now - timedelta(minutes=5)))
+    for _ in range(2):
+        response = proposal_client.post(f"/workout-proposals/{proposal_id}/{action}")
+        assert response.status_code == 410
+        assert response.json() == {"detail": "Proposal has expired"}
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == "expired"
+        assert stored.resolved_at is not None and stored.workout_id is None
+        assert session.scalar(select(func.count()).select_from(Workout)) == 0
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+
+
+@pytest.mark.parametrize("action", ["confirm", "reject"])
+def test_http_foreign_and_unknown_proposals_are_indistinguishable(
+    proposal_client: TestClient, postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID], monkeypatch: pytest.MonkeyPatch, action: str,
+) -> None:
+    proposal_id, _ = pending_proposal
+    foreign_owner = uuid4()
+    monkeypatch.setitem(app.dependency_overrides, get_demo_user_id, lambda: foreign_owner)
+    for target in (proposal_id, uuid4()):
+        response = proposal_client.post(f"/workout-proposals/{target}/{action}")
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Proposal not found"}
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == "pending"
+        assert stored.resolved_at is None and stored.workout_id is None
+        assert session.scalar(select(func.count()).select_from(Workout)) == 0
+
+
+@pytest.mark.parametrize("action", ["confirm", "reject"])
+def test_http_decisions_reject_invalid_ids_and_payload_changes(
+    proposal_client: TestClient, postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID], action: str,
+) -> None:
+    proposal_id, _ = pending_proposal
+    invalid_id = proposal_client.post(f"/workout-proposals/not-a-uuid/{action}")
+    assert invalid_id.status_code == 422
+    for payload in (
+        {"user_id": str(uuid4())}, {"confirmed": True}, {"sets": []},
+        {"decision": "confirm"}, {"proposal_id": str(uuid4())}, [],
+    ):
+        response = proposal_client.post(
+            f"/workout-proposals/{proposal_id}/{action}", json=payload,
+        )
+        assert response.status_code == 422
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == "pending"
+        assert stored.resolved_at is None and stored.workout_id is None
+        assert session.scalar(select(func.count()).select_from(Workout)) == 0
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+
+
+def test_http_catalog_conflict_rolls_back_confirmation(
+    proposal_client: TestClient, postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID],
+) -> None:
+    proposal_id, _ = pending_proposal
+    with postgres_engine.begin() as connection:
+        connection.execute(update(Exercise).values(name=Exercise.name + " renamed"))
+    response = proposal_client.post(f"/workout-proposals/{proposal_id}/confirm")
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Proposal exercise catalog has changed"}
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == "pending"
+        assert stored.resolved_at is None and stored.workout_id is None
+        assert session.scalar(select(func.count()).select_from(Workout)) == 0
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+
+
+@pytest.mark.parametrize("failure", ["insert", "commit"])
+def test_http_write_failure_rolls_back_consent_and_sets_then_allows_retry(
+    proposal_client: TestClient, postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID], failure: str,
+) -> None:
+    proposal_id, _ = pending_proposal
+    with postgres_engine.begin() as connection:
+        if failure == "insert":
+            connection.execute(text(
+                "ALTER TABLE workout_sets ADD CONSTRAINT test_http_second_set CHECK (reps <> 8)"
+            ))
+        else:
+            connection.execute(text("""
+                CREATE FUNCTION reject_confirmation_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    RAISE EXCEPTION 'synthetic-sensitive-write-detail';
+                END; $$
+            """))
+            connection.execute(text("""
+                CREATE CONSTRAINT TRIGGER reject_confirmation_commit
+                AFTER UPDATE ON workout_proposals DEFERRABLE INITIALLY DEFERRED
+                FOR EACH ROW EXECUTE FUNCTION reject_confirmation_commit()
+            """))
+    response = proposal_client.post(f"/workout-proposals/{proposal_id}/confirm")
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Workout service is unavailable"}
+    with Session(postgres_engine) as session, session.begin():
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == "pending"
+        assert stored.resolved_at is None and stored.workout_id is None
+        assert session.scalar(select(func.count()).select_from(Workout)) == 0
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+        if failure == "insert":
+            session.execute(text("ALTER TABLE workout_sets DROP CONSTRAINT test_http_second_set"))
+        else:
+            session.execute(text("DROP TRIGGER reject_confirmation_commit ON workout_proposals"))
+    retry = proposal_client.post(f"/workout-proposals/{proposal_id}/confirm")
+    assert retry.status_code == 200
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == "confirmed"
+        assert stored.workout_id == retry.json()["workout_id"]
+        assert session.scalar(select(func.count()).select_from(Workout)) == 1
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 3
+
+
+@pytest.mark.parametrize("second_action", ["confirm", "reject"])
+def test_http_concurrent_decisions_serialize_without_duplicate_workouts(
+    proposal_client: TestClient, postgres_engine: Engine,
+    pending_proposal: tuple[UUID, UUID], second_action: str,
+) -> None:
+    proposal_id, _ = pending_proposal
+    barrier = Barrier(2)
+
+    def decide(action: str) -> Response:
+        barrier.wait(timeout=5)
+        return proposal_client.post(f"/workout-proposals/{proposal_id}/{action}")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(decide, action) for action in ("confirm", second_action)]
+        responses = [future.result(timeout=10) for future in futures]
+    if second_action == "confirm":
+        assert [response.status_code for response in responses] == [200, 200]
+        assert responses[0].json() == responses[1].json()
+    else:
+        assert sorted(response.status_code for response in responses) == [200, 409]
+    winner = next(response.json() for response in responses if response.status_code == 200)
+    with Session(postgres_engine) as session:
+        stored = session.get(WorkoutProposalRecord, proposal_id)
+        assert stored is not None and stored.state == winner["state"]
+        assert stored.workout_id == winner["workout_id"]
+        expected_workouts = int(winner["state"] == "confirmed")
+        assert session.scalar(select(func.count()).select_from(Workout)) == expected_workouts
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 3 * expected_workouts
+
+
+def test_http_confirmation_executes_existing_consent_after_its_original_deadline(
+    proposal_client: TestClient, postgres_engine: Engine,
+    confirmed_proposal: tuple[UUID, UUID],
+) -> None:
+    proposal_id, _ = confirmed_proposal
+    with Session(postgres_engine) as session, session.begin():
+        now = session.scalar(select(func.clock_timestamp()))
+        assert now is not None
+        session.execute(update(WorkoutProposalRecord).where(
+            WorkoutProposalRecord.id == proposal_id,
+        ).values(created_at=now - timedelta(minutes=20), expires_at=now - timedelta(minutes=5)))
+    response = proposal_client.post(f"/workout-proposals/{proposal_id}/confirm", json={})
+    assert response.status_code == 200 and response.json()["state"] == "confirmed"
+    with Session(postgres_engine) as session:
+        assert session.scalar(select(func.count()).select_from(Workout)) == 1
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 3

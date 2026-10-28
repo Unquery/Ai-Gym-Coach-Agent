@@ -19,6 +19,8 @@ review. A PostgreSQL proposal store tracks confirmation, rejection, and expirati
 A separate server-side executor can atomically save confirmed workouts and their
 sets with replay protection. Confirmation and execution are never LLM tools.
 `POST /agent/chat` exposes answers and proposals through a typed JSON contract.
+Separate HTTP confirmation/rejection actions apply human decisions; confirmation
+and workout persistence commit atomically and retries cannot duplicate workouts.
 
 ## Setup (Windows PowerShell)
 
@@ -373,8 +375,8 @@ leave the transaction block to roll back; database errors stop with a generic
 `AgentError` and never enter another model request. Only pending proposal storage
 is allowed: no `Workout`/`WorkoutSet` is created or confirmed. The existing
 `decide_workout_proposal` and `execute_confirmed_workout` functions remain separate
-trusted user-action backend operations. Authentication and HTTP confirmation
-routing remain planned. Pydantic validates structure, not extraction fidelity;
+trusted user-action backend operations, now called by the HTTP actions below.
+Authentication remains planned. Pydantic validates structure, not extraction fidelity;
 human review of the actual snapshot is still necessary.
 
 ```powershell
@@ -415,8 +417,8 @@ identity injection. LLM settings are loaded only for validated chat requests;
 `/health` and application import do not require them. The LLM client is closed
 before the transaction commits. An answer/proposal is returned only after commit
 succeeds; any exception rolls back that transaction, including commit-time failure.
-No additional endpoint, dependency, migration, streaming or conversation storage
-is introduced. Each request is one independent agent conversation.
+Each request is one independent agent conversation; no streaming or conversation
+storage is introduced.
 
 Errors use fixed `{"detail":"..."}` messages without provider bodies, keys, SQL
 or tracebacks: 504 for SDK timeouts; 502 for other provider failures or `AgentError`
@@ -439,6 +441,47 @@ PostgreSQL schemas for persistence and commit rollback:
 
 ```powershell
 uv run --env-file .env --locked pytest tests/test_agent_chat.py -q
+```
+
+## Workout proposal decision HTTP API
+
+After reviewing the exact proposal returned by chat, the client sends one explicit
+human action. These routes never call the LLM and are not agent tools:
+
+| Request | HTTP 200 response |
+| --- | --- |
+| `POST /workout-proposals/{proposal_id}/confirm` | `{"proposal_id":"...","state":"confirmed","workout_id":42}` |
+| `POST /workout-proposals/{proposal_id}/reject` | `{"proposal_id":"...","state":"rejected","workout_id":null}` |
+
+The body can be omitted or `{}`; fields are forbidden, including owner IDs,
+confirmation flags and edited sets. UUIDs serialize as strings. The server uses
+the existing demo-owner dependency, not client-selected identity; authentication
+remains planned. Retrieve the saved sets through the existing workout detail API.
+
+Each action uses one transaction and an owner-scoped proposal row lock. Confirm
+reuses the stored snapshot and existing decision/execution services, committing
+consent, the workout, all sets and the execution link together. Failure rolls all
+of them back; success is returned only after commit. Reject records the decision
+without creating workouts or sets. Concurrent requests serialize under the lock.
+
+Repeating confirm returns the same workout ID; repeating reject returns the same
+rejected result. Neither changes the original decision timestamp. A confirmed
+proposal with no execution link can still be executed by an explicit confirm
+request; its original consent deadline does not expire already recorded consent.
+Idempotency is scoped to one proposal ID; a different proposal is a separate action.
+
+Errors use controlled `{"detail":"..."}` messages: 404 for missing/foreign
+proposals, 409 for an opposite terminal decision or changed exercise catalog,
+410 for expired proposals, and 503 for database/stored-payload failures. Invalid
+UUIDs and request bodies return standard 422 validation errors. Pending expiration
+uses the database clock after locking; its `expired` transition commits before
+the 410 response. Chat cannot confirm proposals or execute workouts.
+
+PostgreSQL tests use disposable schemas, including real insert/commit failures
+and concurrent decisions. They never require live LLM calls:
+
+```powershell
+uv run --env-file .env --locked pytest tests/test_workout_execution.py tests/test_proposal_store.py tests/test_agent_chat.py -q
 ```
 
 ## Deterministic exercise progress
@@ -535,8 +578,8 @@ database records; the caller owns the session and client. SDK/database failures
 propagate without a success result. Schema validation checks structure and
 ranges, not semantic fidelity to the original text, so human review is required.
 Draft extraction remains separate from the persistence/decision functions below.
-Workout write execution and conversation routing remain future tasks. Tests mock
-all LLM responses.
+The agent and HTTP workflows above now connect proposals to separate human
+decisions and workout execution. Tests mock all LLM responses.
 
 ```powershell
 uv run --locked pytest tests/test_workout_proposals.py -q
@@ -630,8 +673,9 @@ objects. Repeated/concurrent execution returns the same saved workout without
 inserting duplicates or requiring catalog revalidation again. Repeating the
 separate human decision still raises `ProposalClosedError`.
 
-This executor is not an LLM tool or HTTP route. Authentication and confirmation
-routing remain separate work. No live LLM call is needed to execute or test it.
+This executor is not an LLM tool. The confirm HTTP action above calls it in the
+same transaction as the human decision. Authentication remains planned.
+No live LLM call is needed to execute or test it.
 
 ```powershell
 uv run --env-file .env --locked pytest tests/test_workout_execution.py tests/test_proposal_store.py tests/test_migrations.py -q

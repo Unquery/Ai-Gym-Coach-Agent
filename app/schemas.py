@@ -1,7 +1,7 @@
 """Public HTTP request and response schemas."""
 
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -74,3 +74,13 @@ class WorkoutSetRead(BaseModel):
 
 class WorkoutDetailRead(WorkoutRead):
     sets: list[WorkoutSetRead]
+
+
+class ProposalActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ProposalActionResponse(BaseModel):
+    proposal_id: UUID
+    state: Literal["confirmed", "rejected"]
+    workout_id: int | None

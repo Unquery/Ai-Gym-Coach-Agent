@@ -174,8 +174,8 @@ under shared locks before first execution. Workout, all sets, and the execution
 link commit together or roll back together. Linked workouts cannot be deleted
 while referenced. IDs, per-exercise numbering, reps, Decimal external weights, and
 interleaved set order are preserved. Confirmation TTL limits consent, not later
-execution/retries. No executor is exposed to the LLM; confirmation routing and
-authentication remain future work.
+execution/retries. No executor is exposed to the LLM; human-action HTTP routing
+is described below, and authentication remains future work.
 
 `app.agent.run_agent` now integrates pending proposal creation alongside the two
 read tools through the same bounded loop. The separate `run_read_only_agent`
@@ -190,7 +190,7 @@ sole call in a complete batch; both outcomes terminate the loop with a typed
 The caller owns the transaction and reports storage only after commit; failures
 roll back. One run creates at most one proposal; separate runs can create new
 pending snapshots. Neither confirmation nor workout execution is registered as
-an agent tool. Human-action HTTP routing and authentication remain planned.
+an agent tool. Human-action HTTP routing is described below; authentication remains planned.
 
 `POST /agent/chat` now provides the minimal synchronous HTTP adapter for run_agent.
 Its strict message-only request trims whitespace, limits length to 1–4000 and
@@ -204,7 +204,24 @@ errors handle provider/network/agent/configuration/commit failures without raw
 diagnostics. The existing 30-second SDK timeout is not an overall conversation
 deadline; automatic retries remain disabled. Chat cannot confirm or execute
 workouts, including proposals already confirmed through a trusted backend action.
-No HTTP confirmation action, conversation persistence or UI is added.
+Conversation persistence and UI remain outside this adapter.
+
+Separate `POST /workout-proposals/{proposal_id}/confirm` and `/reject` actions
+accept an omitted/empty body and forbid client fields, including snapshot edits
+and identity/authorization flags. Both inject the existing server-side demo owner
+and request-scoped session; authentication remains planned. They never call the
+LLM. A shared HTTP helper holds the owner-scoped row lock and uses the existing
+store/executor in one transaction. Confirm atomically commits consent, workout,
+all sets and the execution link; rejection creates no workout. Responses follow
+commit and contain proposal_id, confirmed/rejected state, and workout_id (null
+for rejection). Same-action retries return the existing result without changing
+consent timestamps; opposite decisions return 409. The proposal ID scopes replay
+protection. Existing confirmed consent can execute after its original deadline.
+Missing/foreign proposals return 404; expired proposals return 410 after committing
+the expiration transition. Catalog changes return 409; database or stored-payload
+errors return controlled 503 responses and roll back the entire action. Invalid
+UUIDs/bodies return 422. PostgreSQL API tests cover repeats, conflicting/concurrent
+decisions, ownership, expiry, forbidden edits and insert/commit failure recovery.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

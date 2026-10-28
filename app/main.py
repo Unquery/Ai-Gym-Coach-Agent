@@ -3,9 +3,10 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Path, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Path, Query
 from openai import APIError, APITimeoutError, RateLimitError
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -21,10 +22,19 @@ from app.database import get_session
 from app.llm import create_llm_client
 from app.llm_config import load_llm_settings
 from app.models import Exercise, Workout, WorkoutPlan, WorkoutSet
+from app.proposal_store import (
+    ProposalClosedError,
+    ProposalDecision,
+    ProposalNotFoundError,
+    decide_workout_proposal,
+    get_workout_proposal,
+)
 from app.queries import get_workout_history
 from app.schemas import (
     ExerciseCreate,
     ExerciseRead,
+    ProposalActionRequest,
+    ProposalActionResponse,
     WorkoutCreate,
     WorkoutDetailRead,
     WorkoutRead,
@@ -32,6 +42,11 @@ from app.schemas import (
     WorkoutSetRead,
 )
 from app.seed import DEMO_USER_ID
+from app.workout_execution import (
+    ProposalCatalogChangedError,
+    ProposalNotConfirmedError,
+    execute_confirmed_workout,
+)
 
 app = FastAPI(title="AI Gym Coach")
 
@@ -79,6 +94,82 @@ def agent_chat(
         raise HTTPException(status_code=502, detail="AI response could not be produced") from None
     except SQLAlchemyError:
         raise HTTPException(status_code=503, detail="AI service is unavailable") from None
+
+
+def _apply_proposal_decision(
+    proposal_id: UUID,
+    decision: ProposalDecision,
+    *,
+    session: Session,
+    user_id: UUID,
+) -> ProposalActionResponse:
+    """Apply a human HTTP action and its writes in one request-owned transaction."""
+    try:
+        with session.begin():
+            # Keep the owner-scoped row lock through the decision and execution.
+            proposal = get_workout_proposal(proposal_id, session=session, user_id=user_id)
+            if proposal.state == "pending":
+                proposal = decide_workout_proposal(
+                    proposal_id, decision, session=session, user_id=user_id,
+                )
+
+            response = None
+            if proposal.state != "expired":
+                expected_state = "confirmed" if decision == "confirm" else "rejected"
+                if proposal.state != expected_state:
+                    raise HTTPException(
+                        status_code=409, detail="Proposal cannot accept this decision",
+                    )
+                workout_id = (
+                    execute_confirmed_workout(
+                        proposal_id, session=session, user_id=user_id,
+                    ).id
+                    if decision == "confirm" else None
+                )
+                response = ProposalActionResponse(
+                    proposal_id=proposal_id, state=expected_state, workout_id=workout_id,
+                )
+    except ProposalNotFoundError:
+        raise HTTPException(status_code=404, detail="Proposal not found") from None
+    except ProposalCatalogChangedError:
+        raise HTTPException(
+            status_code=409, detail="Proposal exercise catalog has changed",
+        ) from None
+    except (ProposalClosedError, ProposalNotConfirmedError):
+        raise HTTPException(
+            status_code=409, detail="Proposal cannot accept this decision",
+        ) from None
+    except (SQLAlchemyError, ValidationError):
+        raise HTTPException(status_code=503, detail="Workout service is unavailable") from None
+
+    # Expiration is a persisted transition: commit it before raising an HTTP error.
+    if response is None:
+        raise HTTPException(status_code=410, detail="Proposal has expired")
+    return response
+
+
+@app.post("/workout-proposals/{proposal_id}/confirm", response_model=ProposalActionResponse)
+def confirm_workout_proposal(
+    proposal_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    payload: Annotated[ProposalActionRequest, Body()] = ProposalActionRequest(),
+) -> ProposalActionResponse:
+    return _apply_proposal_decision(
+        proposal_id, "confirm", session=session, user_id=user_id,
+    )
+
+
+@app.post("/workout-proposals/{proposal_id}/reject", response_model=ProposalActionResponse)
+def reject_workout_proposal(
+    proposal_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    payload: Annotated[ProposalActionRequest, Body()] = ProposalActionRequest(),
+) -> ProposalActionResponse:
+    return _apply_proposal_decision(
+        proposal_id, "reject", session=session, user_id=user_id,
+    )
 
 
 @app.get("/exercises", response_model=list[ExerciseRead])
