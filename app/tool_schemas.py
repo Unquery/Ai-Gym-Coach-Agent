@@ -70,9 +70,12 @@ def get_agent_tool_schemas() -> list[ChatCompletionToolUnionParam]:
             "name": DRAFT_TOOL_NAME,
             "description": (
                 "Propose logging explicitly described performed sets for human review. "
-                "Supply original exercise names, reps and external weight in kg, "
-                "preserving set order. Use null for missing/unclear reps or weight; "
-                "zero weight requires explicit absence of extra load. The backend "
+                "Each sets item has exactly exercise_name, reps, and weight_kg. "
+                "weight_kg is external weight in kilograms; do not rename this field. "
+                "Preserve original exercise names, reps and set order. "
+                "Explicit 'no additional weight' or 'no extra weight' means "
+                "weight_kg=0 for every affected set. Use null for missing/unclear "
+                "reps or weight; never invent zero. The backend "
                 "resolves catalog names and may store a pending proposal only. "
                 "Never confirms or creates a workout. Request this tool alone."
             ),

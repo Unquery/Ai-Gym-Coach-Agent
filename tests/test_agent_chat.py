@@ -302,6 +302,7 @@ def test_chat_never_confirms_or_executes_model_selected_actions(
         ("rate_limit", 503),
         ("authentication", 502),
         ("provider", 502),
+        ("tool_validation", 502),
         ("invalid_reply", 502),
     ],
 )
@@ -329,9 +330,14 @@ def test_chat_returns_controlled_provider_errors_without_details_or_retries(
             )
         )
     else:
-        code = {"rate_limit": 429, "authentication": 401, "provider": 500}[failure]
+        code = {
+            "rate_limit": 429, "authentication": 401, "provider": 500, "tool_validation": 400,
+        }[failure]
+        error = {"message": SENSITIVE_DETAIL}
+        if failure == "tool_validation":
+            error["code"] = "tool_use_failed"
         responses.append(
-            httpx2.Response(code, json={"error": {"message": SENSITIVE_DETAIL}})
+            httpx2.Response(code, json={"error": error})
         )
     response = api.post("/agent/chat", json={"message": "Hello"})
     assert response.status_code == expected_status

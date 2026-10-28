@@ -44,10 +44,14 @@ SYSTEM_PROMPT = (
 
 PROPOSAL_INSTRUCTIONS = (
     " When the user asks to log explicitly described performed sets, use "
-    "propose_workout_logging alone. Preserve exercise names, reps, external "
+    "propose_workout_logging alone. Each sets item must contain exactly "
+    "exercise_name, reps, and weight_kg. Use weight_kg, never external_weight. "
+    "Preserve exercise names, reps, external "
     "weights in kilograms, and global set order. Do not invent data or infer "
-    "sets from plans/history. Use null for missing/unclear reps or weights; "
-    "never default weight to zero. Zero requires explicit absence of extra load. "
+    "sets from plans/history. Explicit 'no additional weight' or 'no extra weight' "
+    "means weight_kg=0 for every affected set; no kg unit is needed for explicit "
+    "absence of extra load. Use null for missing/unclear reps or weights; "
+    "never invent zero. "
     "Do not assume weight units or convert unspecified/non-kg units yourself. "
     "Do not supply owner IDs, catalog IDs, set numbers, or confirmation flags. "
     "The tool only prepares a pending proposal for human review; no workout "

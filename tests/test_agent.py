@@ -664,6 +664,7 @@ def test_read_only_agent_cannot_create_pending_proposals(mocked_llm: MockedLLM) 
     '{"sets":[]}',
     '{"sets":[{"exercise_name":"Synthetic pull-up","reps":true,"weight_kg":"0"}]}',
     '{"sets":[{"exercise_name":"Synthetic pull-up","reps":6}]}',
+    '{"sets":[{"exercise_name":"Synthetic pull-up","reps":8,"external_weight":0}]}',
     '{"sets":[{"exercise_name":"Synthetic pull-up","reps":6,"weight_kg":"0","exercise_id":1}]}',
     '{"sets":[{"exercise_name":"Synthetic pull-up","reps":6,"weight_kg":"0"}],"user_id":"untrusted"}',
     '{"sets":[{"exercise_name":"Synthetic pull-up","reps":6,"weight_kg":"0"}],"confirmed":true}',
