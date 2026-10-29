@@ -8,15 +8,19 @@ import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from openai import DefaultHttpx2Client, OpenAI
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import Engine, func, select, text
 from sqlalchemy.orm import Session
 
+from app.agent_schemas import AgentAnswerResponse, AgentProposalResponse
+from app.conversation_store import append_message, create_conversation, get_conversation_messages
 from app.database import get_session
 from app.llm import create_llm_client
 from app.llm_config import LLMSettings
 from app.main import app, get_demo_user_id
-from app.models import Exercise, Workout, WorkoutProposalRecord, WorkoutSet
+from app.models import (
+    Conversation, ConversationMessage, Exercise, Workout, WorkoutProposalRecord, WorkoutSet,
+)
 from app.proposal_store import (
     ProposalNotFoundError,
     decide_workout_proposal,
@@ -30,6 +34,18 @@ ChatContext = tuple[
     list[OpenAI],
 ]
 SENSITIVE_DETAIL = "synthetic-sensitive-provider-detail"
+
+
+def seed_chat_conversation(engine: Engine, owner: UUID) -> UUID:
+    with Session(engine) as session, session.begin():
+        conversation = create_conversation(session=session, user_id=owner)
+        append_message(
+            conversation.id, session=session, user_id=owner, role="user", content="Earlier question."
+        )
+        append_message(
+            conversation.id, session=session, user_id=owner, role="assistant", content="Earlier answer."
+        )
+        return conversation.id
 
 
 def completion_response(
@@ -77,6 +93,10 @@ def chat_context(monkeypatch: pytest.MonkeyPatch) -> Iterator[ChatContext]:
     previous_overrides = app.dependency_overrides.copy()
     app.dependency_overrides[get_session] = lambda: MagicMock(spec=Session)
     monkeypatch.setattr("app.main.load_llm_settings", lambda: settings)
+    monkeypatch.setattr("app.main.create_conversation", lambda *, session, user_id: (
+        Conversation(id=uuid4(), user_id=user_id)
+    ))
+    monkeypatch.setattr("app.main.append_message", MagicMock())
 
     def respond(request: httpx2.Request) -> httpx2.Response:
         requests.append(json.loads(request.content))
@@ -107,6 +127,7 @@ def chat_context(monkeypatch: pytest.MonkeyPatch) -> Iterator[ChatContext]:
 def postgres_chat(
     postgres_engine: Engine,
     chat_context: ChatContext,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[ChatContext, int, UUID]:
     owner = uuid4()
     with Session(postgres_engine) as session, session.begin():
@@ -121,6 +142,8 @@ def postgres_chat(
 
     app.dependency_overrides[get_session] = override_session
     app.dependency_overrides[get_demo_user_id] = lambda: owner
+    monkeypatch.setattr("app.main.create_conversation", create_conversation)
+    monkeypatch.setattr("app.main.append_message", append_message)
     return chat_context, exercise_id, owner
 
 
@@ -131,7 +154,11 @@ def test_chat_returns_a_tagged_answer_and_closes_the_client(
     responses.append(completion_response("Synthetic answer"))
     response = api.post("/agent/chat", json={"message": "  Hello  "})
     assert response.status_code == 200
-    assert response.json() == {"type": "answer", "message": "Synthetic answer"}
+    body = response.json()
+    assert UUID(body["conversation_id"]).version == 4
+    assert body == {
+        "type": "answer", "message": "Synthetic answer", "conversation_id": body["conversation_id"],
+    }
     assert len(requests) == 1 and requests[0]["messages"][1]["content"] == "Hello"
     assert clients[0].is_closed
     schema = api.get("/openapi.json").json()["paths"]["/agent/chat"]["post"]
@@ -154,6 +181,12 @@ def test_chat_returns_a_tagged_answer_and_closes_the_client(
         {"message": "x" * 4001},
         {"message": "Hello", "user_id": "untrusted"},
         {"message": "Hello", "confirmed": True},
+        {"message": "Hello", "conversation_id": "not-a-uuid"},
+        {"message": "Hello", "conversation_id": ""},
+        {"message": "Hello", "conversation_id": 123},
+        {"message": "Hello", "conversation_id": True},
+        {"message": "Hello", "conversation_id": []},
+        {"message": "Hello", "conversation_id": {}},
     ],
 )
 def test_invalid_chat_requests_never_create_an_llm_client(
@@ -192,7 +225,7 @@ def test_chat_serializes_owned_pending_or_clarification_without_workout_writes(
     response = api.post("/agent/chat", json={"message": "Log my synthetic pull-up set"})
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"type", "proposal"} and body["type"] == "proposal"
+    assert set(body) == {"type", "proposal", "conversation_id"} and body["type"] == "proposal"
     proposal = body["proposal"]
     assert proposal["requires_confirmation"] is True
     assert proposal["sets"][0]["exercise_id"] == exercise_id
@@ -200,6 +233,14 @@ def test_chat_serializes_owned_pending_or_clarification_without_workout_writes(
     assert proposal["sets"][0]["weight_kg"] == (None if missing_weight else "2.50")
     assert len(requests) == 1 and clients[0].is_closed
     with Session(postgres_engine) as session, session.begin():
+        conversation_id = UUID(body["conversation_id"])
+        conversation = session.get(Conversation, conversation_id)
+        assert conversation is not None and conversation.user_id == owner
+        messages = get_conversation_messages(conversation_id, session=session, user_id=owner)
+        assert [(item.position, item.role) for item in messages] == [(1, "user"), (2, "assistant")]
+        assert messages[0].content == "Log my synthetic pull-up set"
+        assert messages[1].content is not None and json.loads(messages[1].content) == proposal
+        assert "The workout was saved and confirmed!" not in messages[1].content
         if missing_weight:
             assert proposal["status"] == "needs_clarification"
             assert proposal["proposal_id"] is None and proposal["expires_at"] is None
@@ -367,11 +408,14 @@ def test_missing_chat_configuration_is_controlled_and_does_not_affect_health(
 
 
 @pytest.mark.postgres
+@pytest.mark.parametrize("existing", [False, True])
 def test_chat_commit_failure_rolls_back_pending_proposal_before_reporting_success(
     postgres_engine: Engine,
     postgres_chat: tuple[ChatContext, int, UUID],
+    existing: bool,
 ) -> None:
-    (api, requests, responses, clients), _, _owner = postgres_chat
+    (api, requests, responses, clients), _, owner = postgres_chat
+    conversation_id = seed_chat_conversation(postgres_engine, owner) if existing else None
     # A deferred trigger fails at COMMIT, after the proposal and response are built.
     # Both trigger and function live only in this test's disposable schema.
     with postgres_engine.begin() as connection:
@@ -404,7 +448,10 @@ def test_chat_commit_failure_rolls_back_pending_proposal_before_reporting_succes
             },
         )
     )
-    response = api.post("/agent/chat", json={"message": "Log six synthetic pull-ups"})
+    response = api.post("/agent/chat", json={
+        "message": "Log six synthetic pull-ups",
+        "conversation_id": str(conversation_id) if conversation_id else None,
+    })
     assert response.status_code == 503
     assert response.json() == {"detail": "AI service is unavailable"}
     assert SENSITIVE_DETAIL not in response.text
@@ -415,6 +462,12 @@ def test_chat_commit_failure_rolls_back_pending_proposal_before_reporting_succes
         )
         assert session.scalar(select(func.count()).select_from(Workout)) == 0
         assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+        assert session.scalar(select(func.count()).select_from(Conversation)) == int(existing)
+        assert session.execute(select(
+            ConversationMessage.role, ConversationMessage.content,
+        ).order_by(ConversationMessage.position)).all() == (
+            [("user", "Earlier question."), ("assistant", "Earlier answer.")] if existing else []
+        )
 
 
 @pytest.mark.postgres
@@ -445,7 +498,10 @@ def test_chat_history_tool_reads_the_server_owned_workout(
 
     response_json = response.json()
 
-    assert response_json == {"type": "answer", "message": "Synthetic history answer"}
+    assert response_json == {
+        "type": "answer", "message": "Synthetic history answer",
+        "conversation_id": response_json["conversation_id"],
+    }
 
     assert len(requests) == 2
 
@@ -498,7 +554,7 @@ def pending_logging_chat(
     )})
     assert proposed.status_code == 200
     body = proposed.json()
-    assert set(body) == {"type", "proposal"} and body["type"] == "proposal"
+    assert set(body) == {"type", "proposal", "conversation_id"} and body["type"] == "proposal"
     proposal = body["proposal"]
     assert proposal["status"] == "awaiting_confirmation"
     assert proposal["requires_confirmation"] is True and proposal["issues"] == []
@@ -567,7 +623,10 @@ def test_chat_proposal_confirmation_preserves_sets_and_feeds_read_only_progress(
     ])
     progress_reply = api.post("/agent/chat", json={"message": "Show progress for my pull-ups"})
     assert progress_reply.status_code == 200
-    assert progress_reply.json() == {"type": "answer", "message": "Synthetic progress answer"}
+    assert progress_reply.json() == {
+        "type": "answer", "message": "Synthetic progress answer",
+        "conversation_id": progress_reply.json()["conversation_id"],
+    }
     tool_message = requests[-1]["messages"][-1]
     assert tool_message["role"] == "tool"
     progress = json.loads(tool_message["content"])
@@ -697,3 +756,192 @@ def test_chat_logging_workflow_keeps_proposals_and_saved_results_owner_scoped(
         assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 3
     assert len(requests) == 5 and responses == []
     assert all(client.is_closed for client in clients)
+
+
+@pytest.mark.parametrize("response_type", ["answer", "proposal"])
+@pytest.mark.parametrize("omit_id", [False, True])
+def test_chat_response_requires_a_nonnull_conversation_id(response_type: str, omit_id: bool) -> None:
+    body: dict[str, Any] = {"type": response_type}
+    model: type[AgentAnswerResponse] | type[AgentProposalResponse]
+    if response_type == "answer":
+        body["message"] = "Synthetic answer."
+        model = AgentAnswerResponse
+    else:
+        body["proposal"] = {"status": "needs_clarification", "sets": [], "issues": []}
+        model = AgentProposalResponse
+    if not omit_id:
+        body["conversation_id"] = None
+    with pytest.raises(ValidationError) as error:
+        model.model_validate(body)
+    assert [item["loc"] for item in error.value.errors()] == [("conversation_id",)]
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("explicit_null", [False, True])
+def test_chat_creates_an_owned_conversation_and_persists_only_the_turn(
+    postgres_engine: Engine,
+    postgres_chat: tuple[ChatContext, int, UUID],
+    explicit_null: bool,
+) -> None:
+    (api, requests, responses, clients), _, owner = postgres_chat
+    responses.append(completion_response("Synthetic answer."))
+    payload: dict[str, Any] = {"message": "  Synthetic question.  "}
+    if explicit_null:
+        payload["conversation_id"] = None
+    response = api.post("/agent/chat", json=payload)
+    assert response.status_code == 200
+    conversation_id = UUID(response.json()["conversation_id"])
+    assert conversation_id.version == 4
+    with Session(postgres_engine) as session:
+        conversation = session.get(Conversation, conversation_id)
+        assert conversation is not None and conversation.user_id == owner
+        assert conversation.created_at.utcoffset() is not None
+        messages = get_conversation_messages(conversation_id, session=session, user_id=owner)
+        assert [(item.position, item.role, item.content) for item in messages] == [
+            (1, "user", "Synthetic question."), (2, "assistant", "Synthetic answer."),
+        ]
+        assert all(item.created_at.utcoffset() is not None for item in messages)
+        assert all(item.tool_calls is None and item.tool_call_id is None for item in messages)
+        assert session.scalar(select(func.count()).select_from(Conversation)) == 1
+        assert session.scalar(select(func.count()).select_from(WorkoutProposalRecord)) == 0
+    assert len(requests) == 1 and clients[0].is_closed
+
+
+@pytest.mark.postgres
+def test_chat_reuses_conversation_without_loading_history_into_the_llm(
+    postgres_engine: Engine,
+    postgres_chat: tuple[ChatContext, int, UUID],
+) -> None:
+    (api, requests, responses, clients), _, owner = postgres_chat
+    responses.extend([completion_response("First answer."), completion_response("Second answer.")])
+    first = api.post("/agent/chat", json={"message": "First question."})
+    assert first.status_code == 200
+    conversation_id = first.json()["conversation_id"]
+    second = api.post("/agent/chat", json={
+        "message": "Second question.", "conversation_id": conversation_id,
+    })
+    assert second.status_code == 200 and second.json()["conversation_id"] == conversation_id
+    with Session(postgres_engine) as session:
+        messages = get_conversation_messages(UUID(conversation_id), session=session, user_id=owner)
+        assert [(item.position, item.role, item.content) for item in messages] == [
+            (1, "user", "First question."), (2, "assistant", "First answer."),
+            (3, "user", "Second question."), (4, "assistant", "Second answer."),
+        ]
+        assert session.scalar(select(func.count()).select_from(Conversation)) == 1
+    assert len(requests) == 2 and all(client.is_closed for client in clients)
+    assert [len(request["messages"]) for request in requests] == [2, 2]
+    assert requests[1]["messages"][1] == {"role": "user", "content": "Second question."}
+    assert requests[1]["messages"][0]["role"] == "system"
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("missing", [False, True])
+def test_chat_rejects_foreign_or_missing_conversation_before_llm_access(
+    postgres_engine: Engine,
+    postgres_chat: tuple[ChatContext, int, UUID],
+    missing: bool,
+) -> None:
+    (api, requests, _, clients), _, owner = postgres_chat
+    foreign_owner = uuid4()
+    original_id = seed_chat_conversation(postgres_engine, foreign_owner)
+    conversation_id = uuid4() if missing else original_id
+    response = api.post("/agent/chat", json={
+        "message": "Do not store this.", "conversation_id": str(conversation_id),
+    })
+    assert response.status_code == 404 and response.json() == {"detail": "Conversation not found"}
+    assert requests == [] and clients == []
+    with Session(postgres_engine) as session:
+        assert session.scalar(select(func.count()).select_from(Conversation)) == 1
+        original = session.get(Conversation, original_id)
+        assert original is not None and original.user_id == foreign_owner
+        messages = get_conversation_messages(original_id, session=session, user_id=foreign_owner)
+        assert [item.content for item in messages] == ["Earlier question.", "Earlier answer."]
+        assert get_conversation_messages(original_id, session=session, user_id=owner) == []
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failure", ["timeout", "invalid_reply"])
+def test_chat_llm_failure_rolls_back_the_entire_turn(
+    postgres_engine: Engine,
+    postgres_chat: tuple[ChatContext, int, UUID],
+    existing: bool,
+    failure: str,
+) -> None:
+    (api, requests, responses, clients), _, owner = postgres_chat
+    conversation_id = seed_chat_conversation(postgres_engine, owner) if existing else None
+    if failure == "timeout":
+        responses.append(httpx2.ReadTimeout(SENSITIVE_DETAIL))
+    else:
+        body = completion_response().json()
+        body["choices"] = []
+        responses.append(httpx2.Response(200, json=body))
+    response = api.post("/agent/chat", json={
+        "message": "This turn must roll back.",
+        "conversation_id": str(conversation_id) if conversation_id else None,
+    })
+    assert response.status_code == (504 if failure == "timeout" else 502)
+    assert SENSITIVE_DETAIL not in response.text and "synthetic-test-key" not in response.text
+    assert len(requests) == 1 and clients[0].is_closed
+    with Session(postgres_engine) as session:
+        assert session.scalar(select(func.count()).select_from(Conversation)) == int(existing)
+        assert session.execute(select(
+            ConversationMessage.role, ConversationMessage.content,
+        ).order_by(ConversationMessage.position)).all() == (
+            [("user", "Earlier question."), ("assistant", "Earlier answer.")] if existing else []
+        )
+        assert session.scalar(select(func.count()).select_from(WorkoutProposalRecord)) == 0
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("failed_role", ["user", "assistant"])
+def test_chat_message_insert_failure_rolls_back_conversation_and_proposal(
+    postgres_engine: Engine,
+    postgres_chat: tuple[ChatContext, int, UUID],
+    failed_role: str,
+) -> None:
+    (api, requests, responses, clients), _, _ = postgres_chat
+    with postgres_engine.begin() as connection:
+        connection.execute(text("""
+            CREATE FUNCTION reject_chat_message() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                RAISE EXCEPTION 'synthetic-sensitive-provider-detail';
+            END; $$
+        """))
+        # The role is a fixed test allowlist, not user input.
+        connection.execute(text(f"""
+            CREATE TRIGGER reject_chat_message BEFORE INSERT ON messages
+            FOR EACH ROW WHEN (NEW.role = '{failed_role}')
+            EXECUTE FUNCTION reject_chat_message()
+        """))
+    responses.append(completion_response(
+        tool_name="propose_workout_logging",
+        arguments={"sets": [{"exercise_name": "Synthetic chat pull-up", "reps": 6, "weight_kg": "0"}]},
+    ))
+    response = api.post("/agent/chat", json={"message": "Log six synthetic pull-ups."})
+    assert response.status_code == 503 and SENSITIVE_DETAIL not in response.text
+    assert len(requests) == (1 if failed_role == "assistant" else 0)
+    assert all(client.is_closed for client in clients)
+    with Session(postgres_engine) as session:
+        for model in (Conversation, ConversationMessage, WorkoutProposalRecord, Workout, WorkoutSet):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("source", ["user", "assistant"])
+def test_chat_does_not_store_the_configured_api_key_in_message_text(
+    postgres_engine: Engine,
+    postgres_chat: tuple[ChatContext, int, UUID],
+    source: str,
+) -> None:
+    (api, requests, responses, clients), _, _ = postgres_chat
+    secret = "synthetic-test-key"
+    responses.append(completion_response(secret if source == "assistant" else "Safe answer."))
+    response = api.post("/agent/chat", json={"message": secret if source == "user" else "Hello"})
+    assert response.status_code == (422 if source == "user" else 502)
+    assert secret not in response.text
+    assert len(requests) == (0 if source == "user" else 1)
+    assert all(client.is_closed for client in clients)
+    with Session(postgres_engine) as session:
+        assert session.scalar(select(func.count()).select_from(Conversation)) == 0
+        assert session.scalar(select(func.count()).select_from(ConversationMessage)) == 0

@@ -18,6 +18,11 @@ from app.agent_schemas import (
     AgentChatResponse,
     AgentProposalResponse,
 )
+from app.conversation_store import (
+    ConversationNotFoundError,
+    append_message,
+    create_conversation,
+)
 from app.database import get_session
 from app.llm import create_llm_client
 from app.llm_config import load_llm_settings
@@ -73,19 +78,44 @@ def agent_chat(
     except ValueError:
         raise HTTPException(status_code=503, detail="AI service is unavailable") from None
 
+    # Do not insert the configured provider credential even if pasted into chat.
+    if settings.api_key.get_secret_value() in payload.message:
+        raise HTTPException(status_code=422, detail="Message contains a configured secret")
+
     try:
         with session.begin():
+            conversation_id = payload.conversation_id
+            if conversation_id is None:
+                conversation_id = create_conversation(session=session, user_id=user_id).id
+            # Ownership is checked before opening an LLM client. The parent lock
+            # remains held through the whole turn so concurrent pairs stay together.
+            append_message(
+                conversation_id, session=session, user_id=user_id,
+                role="user", content=payload.message,
+            )
             with create_llm_client(settings) as client:
                 result = run_agent(
                     payload.message, client=client, settings=settings,
                     session=session, user_id=user_id,
                 )
-            response = (
-                AgentAnswerResponse(message=result) if isinstance(result, str)
-                else AgentProposalResponse(proposal=result)
+            response: AgentAnswerResponse | AgentProposalResponse
+            if isinstance(result, str):
+                content = result
+                response = AgentAnswerResponse(conversation_id=conversation_id, message=result)
+            else:
+                # Store the validated proposal, never discarded model prose or settings.
+                content = result.model_dump_json()
+                response = AgentProposalResponse(conversation_id=conversation_id, proposal=result)
+            if settings.api_key.get_secret_value() in content:
+                raise AgentError("The AI response contains a configured secret")
+            append_message(
+                conversation_id, session=session, user_id=user_id,
+                role="assistant", content=content,
             )
-        # A pending proposal is reported as stored only after commit succeeds.
+        # Report the conversation, messages, and any proposal only after commit.
         return response
+    except ConversationNotFoundError:
+        raise HTTPException(status_code=404, detail="Conversation not found") from None
     except APITimeoutError:
         raise HTTPException(status_code=504, detail="AI service timed out") from None
     except RateLimitError:
