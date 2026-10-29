@@ -17,7 +17,9 @@ from app.conversation_store import (
     append_message,
     create_conversation,
     get_conversation_messages,
+    get_recent_conversation_history,
 )
+from app.conversation_history import MAX_HISTORY_ROWS, select_recent_text_turns
 from app.models import Conversation, ConversationMessage, Exercise
 
 pytestmark = pytest.mark.postgres
@@ -311,3 +313,63 @@ def test_concurrent_appends_wait_for_parent_then_allocate_position(
     with Session(postgres_engine) as session:
         messages = get_conversation_messages(conversation_id, session=session, user_id=owner)
         assert [item.position for item in messages] == ([1, 2] if commit_first else [1])
+
+
+def test_recent_history_query_is_bounded_ordered_owner_scoped_and_never_autoflushes(
+    session: Session,
+) -> None:
+    owner = uuid4()
+    conversation = Conversation(user_id=owner, messages=[
+        ConversationMessage(position=position, role="user" if position % 2 else "assistant",
+                            content=f"Message {position}.")
+        for position in range(1, 35)
+    ])
+    same_owner = Conversation(user_id=owner, messages=[
+        ConversationMessage(position=1, role="user", content="Other conversation.")
+    ])
+    foreign = Conversation(user_id=uuid4(), messages=[
+        ConversationMessage(position=1, role="user", content="Foreign text.")
+    ])
+    session.add_all([conversation, same_owner, foreign])
+    session.commit()
+    conversation_id, foreign_id = conversation.id, foreign.id
+    unrelated = Exercise(name="")
+    session.add(unrelated)
+    rows = get_recent_conversation_history(
+        conversation_id, before_position=31, session=session, user_id=owner,
+    )
+    assert len(rows) == MAX_HISTORY_ROWS
+    assert [row[0] for row in rows] == list(range(11, 31))
+    assert [row[2] for row in rows] == [f"Message {position}." for position in range(11, 31)]
+    assert unrelated in session.new and unrelated.id is None
+    for inaccessible_id, reader in ((foreign_id, owner), (conversation_id, uuid4()), (uuid4(), owner)):
+        assert get_recent_conversation_history(
+            inaccessible_id, before_position=31, session=session, user_id=reader,
+        ) == []
+    session.rollback()
+
+
+def test_recent_history_masks_large_text_and_tool_traces_in_sql(session: Session) -> None:
+    owner = uuid4()
+    call = tool_call()
+    call["function"]["arguments"] = "x" * 100_000
+    conversation = Conversation(user_id=owner, messages=[
+        ConversationMessage(position=1, role="user", content="A"),
+        ConversationMessage(position=2, role="assistant", content="B"),
+        ConversationMessage(position=3, role="user", content="x" * 100_000),
+        ConversationMessage(position=4, role="assistant", content="Unpaired reply."),
+        ConversationMessage(position=5, role="assistant", content="Calling.", tool_calls=[call]),
+        ConversationMessage(position=6, role="tool", content="x" * 100_000, tool_call_id="call_1"),
+        ConversationMessage(position=7, role="user", content="C"),
+        ConversationMessage(position=8, role="assistant", content="D"),
+    ])
+    session.add(conversation)
+    session.commit()
+    rows = get_recent_conversation_history(
+        conversation.id, before_position=9, session=session, user_id=owner,
+    )
+    assert len(rows) == 8
+    assert rows[2][2] is None and rows[4][2] is None and rows[5][2] is None
+    assert select_recent_text_turns(rows) == [
+        ("user", "A"), ("assistant", "B"), ("user", "C"), ("assistant", "D"),
+    ]

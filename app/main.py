@@ -22,6 +22,7 @@ from app.conversation_store import (
     ConversationNotFoundError,
     append_message,
     create_conversation,
+    get_recent_conversation_history,
 )
 from app.database import get_session
 from app.llm import create_llm_client
@@ -89,14 +90,18 @@ def agent_chat(
                 conversation_id = create_conversation(session=session, user_id=user_id).id
             # Ownership is checked before opening an LLM client. The parent lock
             # remains held through the whole turn so concurrent pairs stay together.
-            append_message(
+            current_message = append_message(
                 conversation_id, session=session, user_id=user_id,
                 role="user", content=payload.message,
+            )
+            history = get_recent_conversation_history(
+                conversation_id, before_position=current_message.position,
+                session=session, user_id=user_id,
             )
             with create_llm_client(settings) as client:
                 result = run_agent(
                     payload.message, client=client, settings=settings,
-                    session=session, user_id=user_id,
+                    session=session, user_id=user_id, history=history,
                 )
             response: AgentAnswerResponse | AgentProposalResponse
             if isinstance(result, str):

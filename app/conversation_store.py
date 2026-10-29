@@ -8,9 +8,10 @@ records are not durably saved until the caller successfully commits.
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import and_, case, func, insert, select
 from sqlalchemy.orm import Session
 
+from app.conversation_history import MAX_HISTORY_MESSAGE_CHARS, MAX_HISTORY_ROWS
 from app.models import Conversation, ConversationMessage
 
 
@@ -151,3 +152,33 @@ def get_conversation_messages(
             .order_by(ConversationMessage.position)
         ).all()
         return list(result)
+
+
+def get_recent_conversation_history(
+    conversation_id: UUID,
+    *,
+    before_position: int,
+    session: Session,
+    user_id: UUID,
+) -> list[tuple[int, str, str | None]]:
+    """Read at most 20 preceding rows for this owner, oldest first.
+
+    Mask oversized text and all tool metadata in SQL before transferring rows.
+    Keep their positions as barriers so the selector cannot join across them.
+    No JSONB traces or ORM relationships are loaded by this projection.
+    """
+    safe_content = case((and_(
+        ConversationMessage.role.in_(("user", "assistant")),
+        ConversationMessage.tool_calls.is_(None),
+        ConversationMessage.tool_call_id.is_(None),
+        func.char_length(ConversationMessage.content).between(1, MAX_HISTORY_MESSAGE_CHARS),
+    ), ConversationMessage.content), else_=None)
+    statement = select(
+        ConversationMessage.position, ConversationMessage.role, safe_content,
+    ).join(Conversation, ConversationMessage.conversation_id == Conversation.id).where(
+        Conversation.id == conversation_id, Conversation.user_id == user_id,
+        ConversationMessage.position < before_position,
+    ).order_by(ConversationMessage.position.desc()).limit(MAX_HISTORY_ROWS)
+    with session.no_autoflush:
+        rows = session.execute(statement).tuples().all()
+        return [(position, role, content) for position, role, content in reversed(rows)]
