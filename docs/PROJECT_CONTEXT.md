@@ -24,7 +24,7 @@ Docker Compose currently runs the database only.
 | Tool authorization and validation | `app.tool_dispatch`, `app.tool_schemas`, `app.tools`; two read tools and pending proposal creation only. |
 | Deterministic reads/calculations | `app.queries`, `app.progress`; owner-filtered SQL and Decimal metrics. |
 | Workout proposals and consent | `app.workout_proposals`, `app.proposal_store`, `app.workout_execution`; catalog resolution, immutable snapshots, row locks, atomic confirmed writes. |
-| Storage | `app.database`, `app.models`, Alembic `0001`–`0004`; eight tables at migration head. Conversation storage is not yet connected to chat. |
+| Storage | `app.database`, `app.models`, Alembic `0001`–`0005`; eight tables at migration head. Conversation storage supports tool metadata but is not yet connected to chat. |
 
 Complete the API-first, client-independent backend MVP before starting frontend
 or mobile application development.
@@ -247,13 +247,16 @@ decisions, ownership, expiry, forbidden edits and insert/commit failure recovery
 
 Milestone 5 workout logging and explicit human confirmation are complete.
 Milestone 6 begins with PostgreSQL conversation persistence: revision `0004`
-adds owner-bound `Conversation` records and ordered `Message` records without
-changing workout tables. Messages contain user/assistant text; explicit positive
-positions preserve order independently of timestamps. Ownership is inherited
+adds owner-bound `Conversation` records and ordered messages without changing
+workout tables. Revision `0005` adds assistant `tool_calls` JSONB and tool-result
+`tool_call_id`, with role/content constraints. The model is `ConversationMessage`;
+`Message` remains an import alias. Existing text and workout/proposal data are
+preserved; downgrade refuses metadata loss. Explicit positive positions preserve
+order independently of timestamps. Ownership is inherited
 through the conversation and must be checked by future access operations.
 The storage schema is not yet used by `/agent/chat`: history/context loading,
-structured proposal responses, tool-call traces, and multi-turn LLM integration
-remain separate tasks. See [DATABASE.md](DATABASE.md#conversation-history).
+structured proposal responses, automatic tool-trace persistence, and multi-turn
+LLM integration remain separate tasks. See [DATABASE.md](DATABASE.md#conversation-history).
 
 ## Verification status
 
@@ -269,6 +272,12 @@ prompt clarification, and 123 targeted PostgreSQL tests for conversation storage
 at commit `ad650e5`. These are historical results at their respective snapshots,
 not a claim that the full suite was rerun at the current head.
 
+The `0005` storage update passed 33 conversation/migration tests and 104 related
+persistence/proposal/execution tests (137 total, no skips). These runs used
+disposable PostgreSQL schemas; checks include metadata/model agreement, legacy
+data preservation, JSONB round-tripping, and downgrade refusal when metadata exists.
+The demo schema was not migrated, and no provider requests were made.
+
 Separately authorized synthetic Groq scenarios verified history retrieval,
 deterministic exercise progress, and HTTP workout proposal creation. The successful
 logging proposal was separately approved and confirmed through HTTP; a fresh
@@ -278,8 +287,8 @@ clarifications; successful scenarios do not guarantee arbitrary extraction fidel
 
 Conversation models/migration are PostgreSQL-tested, but multi-turn chat is neither
 implemented nor live-verified. There is no authentication or full application
-deployment verification. No application tests or live provider calls are rerun by
-the documentation audit; existing results are retained with their scope.
+deployment verification. The earlier documentation audit did not rerun application
+tests or live provider calls; the later storage checks are recorded above.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

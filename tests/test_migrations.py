@@ -95,10 +95,66 @@ def test_conversation_migration_preserves_all_existing_tables(postgres_engine: E
             table: connection.execute(text(f"SELECT * FROM {table} ORDER BY id")).all()
             for table in existing_tables
         }
-        for target in ("0004", "0003", "0004"):
+        for target in ("0004", "0005", "0003", "0005"):
             if target == "0003":
                 command.downgrade(config, target)
             else:
                 command.upgrade(config, target)
             for table, rows in before.items():
                 assert connection.execute(text(f"SELECT * FROM {table} ORDER BY id")).all() == rows
+
+
+def test_tool_metadata_migration_preserves_existing_conversations(
+    postgres_engine: Engine,
+) -> None:
+    with postgres_engine.begin() as connection:
+        config = migration_config(connection)
+        command.downgrade(config, "0004")
+        conversation_id = uuid4()
+        connection.execute(text(
+            "INSERT INTO conversations (id, user_id) VALUES (:id, :owner)"
+        ), {"id": conversation_id, "owner": uuid4()})
+        connection.execute(text(
+            "INSERT INTO messages (conversation_id, position, role, content) "
+            "VALUES (:id, 1, 'user', 'Synthetic legacy request'), "
+            "(:id, 2, 'assistant', 'Synthetic legacy answer')"
+        ), {"id": conversation_id})
+        conversations = connection.execute(text("SELECT * FROM conversations")).all()
+        original_columns = "id, conversation_id, position, role, content, created_at"
+        messages = connection.execute(text(
+            f"SELECT {original_columns} FROM messages ORDER BY id"
+        )).all()
+        for target in ("0005", "0004", "0005"):
+            if target == "0004":
+                command.downgrade(config, target)
+            else:
+                command.upgrade(config, target)
+                assert connection.scalar(text(
+                    "SELECT bool_and(tool_calls IS NULL AND tool_call_id IS NULL) FROM messages"
+                )) is True
+            assert connection.execute(text("SELECT * FROM conversations")).all() == conversations
+            assert connection.execute(text(
+                f"SELECT {original_columns} FROM messages ORDER BY id"
+            )).all() == messages
+
+
+def test_tool_metadata_downgrade_refuses_data_loss(postgres_engine: Engine) -> None:
+    with postgres_engine.begin() as connection:
+        config = migration_config(connection)
+        conversation_id = uuid4()
+        connection.execute(text(
+            "INSERT INTO conversations (id, user_id) VALUES (:id, :owner)"
+        ), {"id": conversation_id, "owner": uuid4()})
+        # Even assistant text with metadata cannot be downgraded without loss.
+        connection.execute(text(
+            "INSERT INTO messages (conversation_id, position, role, content, tool_calls) "
+            "VALUES (:id, 1, 'assistant', 'Checking history.', "
+            "CAST(:calls AS jsonb))"
+        ), {"id": conversation_id, "calls": '[{"id":"call_1","type":"function",'
+            '"function":{"name":"get_recent_workouts","arguments":"{}"}}]'})
+        before = connection.execute(text("SELECT * FROM messages")).all()
+        with connection.begin_nested():
+            with pytest.raises(RuntimeError, match="Cannot downgrade 0005"):
+                command.downgrade(config, "0004")
+        assert connection.execute(text("SELECT * FROM messages")).all() == before
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005"

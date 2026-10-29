@@ -201,21 +201,39 @@ class Conversation(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    messages: Mapped[list["Message"]] = relationship(
+    messages: Mapped[list["ConversationMessage"]] = relationship(
         back_populates="conversation",
-        order_by="Message.position",
+        order_by="ConversationMessage.position",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
 
 
-class Message(Base):
+class ConversationMessage(Base):
     __tablename__ = "messages"
     __table_args__ = (
         UniqueConstraint("conversation_id", "position"),
         CheckConstraint("position > 0", name="positive_position"),
-        CheckConstraint("role IN ('user', 'assistant')", name="valid_role"),
-        CheckConstraint("content ~ '[^[:space:]]'", name="content_not_blank"),
+        CheckConstraint("role IN ('user', 'assistant', 'tool')", name="valid_role"),
+        CheckConstraint(
+            "content IS NULL OR content ~ '[^[:space:]]'", name="content_not_blank"
+        ),
+        CheckConstraint(
+            "content IS NOT NULL OR (role = 'assistant' AND tool_calls IS NOT NULL)",
+            name="content_or_tool_calls",
+        ),
+        CheckConstraint(
+            "tool_calls IS NULL OR (role = 'assistant' AND "
+            "CASE WHEN jsonb_typeof(tool_calls) = 'array' "
+            "THEN jsonb_array_length(tool_calls) > 0 ELSE false END)",
+            name="valid_tool_calls",
+        ),
+        CheckConstraint(
+            "(role = 'tool' AND tool_call_id IS NOT NULL "
+            "AND tool_call_id ~ '[^[:space:]]') OR "
+            "(role <> 'tool' AND tool_call_id IS NULL)",
+            name="valid_tool_call_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -224,9 +242,17 @@ class Message(Base):
     )
     position: Mapped[int]
     role: Mapped[str] = mapped_column(String(9))
-    content: Mapped[str] = mapped_column(Text)
+    content: Mapped[str | None] = mapped_column(Text)
+    tool_calls: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )
+    tool_call_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+# Preserve the existing import name while making the model's purpose explicit.
+Message = ConversationMessage

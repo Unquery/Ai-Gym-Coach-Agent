@@ -3,9 +3,9 @@
 An AI-powered workout logging and progress analysis assistant built as a Junior AI Engineering portfolio project.
 
 **Status:** Milestones 1–5 complete; **Milestone 6 — Conversation Memory &
-Multi-Turn AI Agent** is in progress. Conversation/message models and migration
-`0004` are implemented and PostgreSQL-tested. Chat still handles independent
-requests; it does not save or load conversation history yet.
+Multi-Turn AI Agent** is in progress. Conversation/message models and migrations
+through `0005`, including tool metadata storage, are implemented and PostgreSQL-tested.
+Chat still handles independent requests; it does not save or load conversation history yet.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
@@ -428,8 +428,9 @@ identity injection. LLM settings are loaded only for validated chat requests;
 `/health` and application import do not require them. The LLM client is closed
 before the transaction commits. An answer/proposal is returned only after commit
 succeeds; any exception rolls back that transaction, including commit-time failure.
-Each request still starts an independent agent conversation. Revision `0004` adds
-conversation/message storage models, but chat does not read or write them yet.
+Each request still starts an independent agent conversation. Revisions `0004` and
+`0005` provide conversation/message storage with tool metadata, but chat does not
+read or write it yet.
 Streaming and history/context loading remain separate tasks.
 
 Errors use fixed `{"detail":"..."}` messages without provider bodies, keys, SQL
@@ -696,18 +697,24 @@ uv run --env-file .env --locked pytest tests/test_workout_execution.py tests/tes
 
 ## Conversation memory (Milestone 6)
 
-`Conversation` and `Message` in `app.models` define the initial storage layer.
-Migration `0004` adds only these two tables, leaving existing workout data intact.
+`Conversation` and `ConversationMessage` in `app.models` define the storage layer;
+`Message` remains a compatible import alias for `ConversationMessage`.
+Migration `0004` adds the two tables; `0005` extends messages with tool metadata.
+Existing workout/proposal data and conversation text are preserved.
 Conversations store a server-selected owner; messages reference their parent and
 have a positive position unique within that conversation. Relationships load
 messages by position, independently of timestamp ties. PostgreSQL constrains
-roles to `user`/`assistant` and rejects blank text.
+roles to `user`/`assistant`/`tool` and rejects blank text. Assistant messages can
+store a nonempty JSONB `tool_calls` array with optional text; tool results require
+text and a nonblank `tool_call_id`. Python `None` for `tool_calls` stores SQL NULL.
+Downgrading below `0005` refuses to discard stored tool metadata.
 
 The schema is implemented and PostgreSQL-tested; chat persistence, owner-checked
 access operations, safe concurrent appends, bounded context loading, and multi-turn
-LLM integration remain unfinished. Raw tool-call traces and structured proposal
-responses are not stored in the initial message schema. Conversation text never
-replaces explicit workout confirmation. See [storage details](docs/DATABASE.md#conversation-history)
+LLM integration remain unfinished. Storage can represent tool exchanges, but the
+agent does not save them yet; structured proposal representation remains undecided.
+Conversation text never replaces explicit workout confirmation.
+See [storage details](docs/DATABASE.md#conversation-history)
 and the [remaining milestone work](docs/ROADMAP.md#milestone-6-remaining-work).
 
 ## Test
