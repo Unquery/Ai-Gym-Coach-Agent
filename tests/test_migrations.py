@@ -29,6 +29,7 @@ def test_migration_can_downgrade_and_upgrade(postgres_engine: Engine) -> None:
             "workout_proposals",
             "conversations",
             "messages",
+            "workout_drafts",
         }
 
 
@@ -95,7 +96,7 @@ def test_conversation_migration_preserves_all_existing_tables(postgres_engine: E
             table: connection.execute(text(f"SELECT * FROM {table} ORDER BY id")).all()
             for table in existing_tables
         }
-        for target in ("0004", "0005", "0003", "0005"):
+        for target in ("0004", "0005", "0006", "0003", "0006"):
             if target == "0003":
                 command.downgrade(config, target)
             else:
@@ -124,7 +125,7 @@ def test_tool_metadata_migration_preserves_existing_conversations(
         messages = connection.execute(text(
             f"SELECT {original_columns} FROM messages ORDER BY id"
         )).all()
-        for target in ("0005", "0004", "0005"):
+        for target in ("0005", "0006", "0004", "0006"):
             if target == "0004":
                 command.downgrade(config, target)
             else:
@@ -158,3 +159,20 @@ def test_tool_metadata_downgrade_refuses_data_loss(postgres_engine: Engine) -> N
                 command.downgrade(config, "0004")
         assert connection.execute(text("SELECT * FROM messages")).all() == before
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0005"
+
+
+def test_draft_downgrade_refuses_to_drop_persisted_state(postgres_engine: Engine) -> None:
+    with postgres_engine.begin() as connection:
+        conversation_id = uuid4()
+        connection.execute(text(
+            "INSERT INTO conversations (id, user_id) VALUES (:id, :owner)"
+        ), {"id": conversation_id, "owner": uuid4()})
+        connection.execute(text(
+            "INSERT INTO workout_drafts (conversation_id) VALUES (:id)"
+        ), {"id": conversation_id})
+        before = connection.execute(text("SELECT * FROM workout_drafts")).all()
+        with connection.begin_nested():
+            with pytest.raises(RuntimeError, match="Cannot downgrade 0006"):
+                command.downgrade(migration_config(connection), "0005")
+        assert connection.execute(text("SELECT * FROM workout_drafts")).all() == before
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0006"

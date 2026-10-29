@@ -17,6 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     and_,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -256,3 +257,30 @@ class ConversationMessage(Base):
 
 # Preserve the existing import name while making the model's purpose explicit.
 Message = ConversationMessage
+
+
+class WorkoutDraftRecord(Base):
+    __tablename__ = "workout_drafts"
+    __table_args__ = (
+        CheckConstraint("version > 0", name="positive_version"),
+        CheckConstraint(
+            "jsonb_typeof(payload) = 'object' AND payload ? 'sets' "
+            "AND jsonb_typeof(payload -> 'sets') = 'array'",
+            name="sets_payload",
+        ),
+        CheckConstraint("updated_at >= created_at", name="valid_update_time"),
+    )
+
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(server_default="1")
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{\"sets\": []}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
