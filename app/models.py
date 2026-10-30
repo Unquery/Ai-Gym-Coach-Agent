@@ -299,3 +299,34 @@ class WorkoutDraftAppendRecord(Base):
     )
     idempotency_key: Mapped[UUID] = mapped_column(primary_key=True)
     set_payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+
+
+class ChatRequestRecord(Base):
+    __tablename__ = "chat_requests"
+    __table_args__ = (
+        UniqueConstraint("user_id", "endpoint", "idempotency_key"),
+        CheckConstraint("length(trim(endpoint)) > 0", name="endpoint_not_blank"),
+        CheckConstraint("fingerprint ~ '^[0-9a-f]{64}$'", name="valid_fingerprint"),
+        CheckConstraint(
+            "(state = 'processing' AND response_status IS NULL AND response_body IS NULL "
+            "AND conversation_id IS NULL) OR (state = 'completed' "
+            "AND response_status IS NOT NULL AND response_status BETWEEN 100 AND 599 "
+            "AND response_body IS NOT NULL AND jsonb_typeof(response_body) = 'object' "
+            "AND conversation_id IS NOT NULL AND response_body ? 'conversation_id' "
+            "AND response_body ->> 'conversation_id' IS NOT NULL "
+            "AND response_body ->> 'conversation_id' = conversation_id::text)",
+            name="valid_response_state",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    user_id: Mapped[UUID]
+    endpoint: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[UUID]
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(10), server_default="processing")
+    response_status: Mapped[int | None]
+    response_body: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    # Keep retry bindings after conversation deletion; replay rechecks ownership.
+    conversation_id: Mapped[UUID | None]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

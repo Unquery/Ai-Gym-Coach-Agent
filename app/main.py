@@ -3,7 +3,8 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Path, Query
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request
+from fastapi.responses import JSONResponse
 from openai import APIError, APITimeoutError, RateLimitError
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
 from pydantic import ValidationError
@@ -18,6 +19,15 @@ from app.agent_schemas import (
     AgentChatResponse,
     AgentProposalResponse,
 )
+from app.chat_idempotency import (
+    ChatRequestConflictError,
+    ChatRequestError,
+    ChatRequestInProgressError,
+    chat_request_fingerprint,
+    complete_chat_request,
+    lock_chat_request,
+    register_chat_request,
+)
 from app.conversation_store import (
     ConversationNotFoundError,
     append_message,
@@ -27,7 +37,7 @@ from app.conversation_store import (
 from app.database import get_session
 from app.llm import create_llm_client
 from app.llm_config import load_llm_settings
-from app.models import Exercise, Workout, WorkoutPlan, WorkoutSet
+from app.models import Conversation, Exercise, Workout, WorkoutPlan, WorkoutSet
 from app.proposal_store import (
     ProposalClosedError,
     ProposalDecision,
@@ -67,13 +77,28 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/agent/chat", response_model=AgentChatResponse)
-def agent_chat(
-    payload: AgentChatRequest,
-    session: Annotated[Session, Depends(get_session)],
-    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+async def get_chat_idempotency(
+    request: Request,
+    key: Annotated[UUID | None, Header(alias="Idempotency-Key")] = None,
+) -> tuple[UUID, str] | None:
+    if key is None:
+        return None
+    if len(request.headers.getlist("idempotency-key")) != 1:
+        raise HTTPException(status_code=422, detail="Supply one Idempotency-Key")
+    raw_body = await request.json()
+    if not isinstance(raw_body, dict):
+        raise HTTPException(status_code=422, detail="Chat request must be a JSON object")
+    try:
+        # Hash raw parsed JSON, before Pydantic trims message text or fills defaults.
+        return key, chat_request_fingerprint(raw_body)
+    except (TypeError, ValueError, UnicodeError):
+        raise HTTPException(status_code=422, detail="Invalid chat request JSON") from None
+
+
+def _run_chat_turn(
+    payload: AgentChatRequest, *, session: Session, user_id: UUID,
 ) -> AgentAnswerResponse | AgentProposalResponse:
-    # Load configuration only after body validation, without affecting app startup.
+    """Run inside the caller's transaction; this helper never commits."""
     try:
         settings = load_llm_settings()
     except ValueError:
@@ -83,42 +108,88 @@ def agent_chat(
     if settings.api_key.get_secret_value() in payload.message:
         raise HTTPException(status_code=422, detail="Message contains a configured secret")
 
+    conversation_id = payload.conversation_id
+    if conversation_id is None:
+        conversation_id = create_conversation(session=session, user_id=user_id).id
+    # Ownership is checked before opening an LLM client. The parent lock remains
+    # held through the whole turn so concurrent pairs stay together.
+    current_message = append_message(
+        conversation_id, session=session, user_id=user_id,
+        role="user", content=payload.message,
+    )
+    history = get_recent_conversation_history(
+        conversation_id, before_position=current_message.position,
+        session=session, user_id=user_id,
+    )
+    with create_llm_client(settings) as client:
+        result = run_agent(
+            payload.message, client=client, settings=settings,
+            session=session, user_id=user_id, history=history,
+        )
+    response: AgentAnswerResponse | AgentProposalResponse
+    if isinstance(result, str):
+        content = result
+        response = AgentAnswerResponse(conversation_id=conversation_id, message=result)
+    else:
+        content = result.model_dump_json()
+        response = AgentProposalResponse(conversation_id=conversation_id, proposal=result)
+    if settings.api_key.get_secret_value() in content:
+        raise AgentError("The AI response contains a configured secret")
+    append_message(
+        conversation_id, session=session, user_id=user_id,
+        role="assistant", content=content,
+    )
+    return response
+
+
+@app.post("/agent/chat", response_model=AgentChatResponse)
+def agent_chat(
+    payload: AgentChatRequest,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    idempotency: Annotated[tuple[UUID, str] | None, Depends(get_chat_idempotency)],
+) -> AgentAnswerResponse | AgentProposalResponse | JSONResponse:
     try:
+        request_id = None
+        if idempotency is not None:
+            key, fingerprint = idempotency
+            # Persist binding before execution, including for failed/restarted attempts.
+            with session.begin():
+                stored = register_chat_request(key, fingerprint, session=session, user_id=user_id)
+                request_id = stored.id
         with session.begin():
-            conversation_id = payload.conversation_id
-            if conversation_id is None:
-                conversation_id = create_conversation(session=session, user_id=user_id).id
-            # Ownership is checked before opening an LLM client. The parent lock
-            # remains held through the whole turn so concurrent pairs stay together.
-            current_message = append_message(
-                conversation_id, session=session, user_id=user_id,
-                role="user", content=payload.message,
-            )
-            history = get_recent_conversation_history(
-                conversation_id, before_position=current_message.position,
-                session=session, user_id=user_id,
-            )
-            with create_llm_client(settings) as client:
-                result = run_agent(
-                    payload.message, client=client, settings=settings,
-                    session=session, user_id=user_id, history=history,
+            stored = lock_chat_request(request_id, session=session, user_id=user_id) if request_id else None
+            if stored is not None and stored.state == "completed":
+                if stored.response_body is None or stored.response_status is None or stored.conversation_id is None:
+                    raise ChatRequestError("Incomplete stored response")
+                # Cached output never grants access to a deleted or reassigned conversation.
+                with session.no_autoflush:
+                    owned_id = session.scalar(select(Conversation.id).where(
+                        Conversation.id == stored.conversation_id, Conversation.user_id == user_id,
+                    ).with_for_update())
+                if owned_id is None:
+                    raise ConversationNotFoundError("Conversation not found")
+                response: AgentAnswerResponse | AgentProposalResponse | JSONResponse = JSONResponse(
+                    status_code=stored.response_status, content=stored.response_body,
                 )
-            response: AgentAnswerResponse | AgentProposalResponse
-            if isinstance(result, str):
-                content = result
-                response = AgentAnswerResponse(conversation_id=conversation_id, message=result)
             else:
-                # Store the validated proposal, never discarded model prose or settings.
-                content = result.model_dump_json()
-                response = AgentProposalResponse(conversation_id=conversation_id, proposal=result)
-            if settings.api_key.get_secret_value() in content:
-                raise AgentError("The AI response contains a configured secret")
-            append_message(
-                conversation_id, session=session, user_id=user_id,
-                role="assistant", content=content,
-            )
-        # Report the conversation, messages, and any proposal only after commit.
+                response = _run_chat_turn(payload, session=session, user_id=user_id)
+                if stored is not None:
+                    # This update and every conversation/proposal write commit atomically.
+                    complete_chat_request(
+                        stored.id, conversation_id=response.conversation_id,
+                        response_status=200, response_body=response.model_dump(mode="json"),
+                        session=session, user_id=user_id,
+                    )
         return response
+    except ChatRequestConflictError:
+        raise HTTPException(status_code=409, detail={"code": "idempotency_key_reused"}) from None
+    except ChatRequestInProgressError:
+        raise HTTPException(
+            status_code=409, detail={"code": "request_in_progress"}, headers={"Retry-After": "1"},
+        ) from None
+    except ChatRequestError:
+        raise HTTPException(status_code=503, detail="AI service is unavailable") from None
     except ConversationNotFoundError:
         raise HTTPException(status_code=404, detail="Conversation not found") from None
     except APITimeoutError:

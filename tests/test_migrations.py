@@ -31,6 +31,7 @@ def test_migration_can_downgrade_and_upgrade(postgres_engine: Engine) -> None:
             "messages",
             "workout_drafts",
             "workout_draft_appends",
+            "chat_requests",
         }
 
 
@@ -97,7 +98,7 @@ def test_conversation_migration_preserves_all_existing_tables(postgres_engine: E
             table: connection.execute(text(f"SELECT * FROM {table} ORDER BY id")).all()
             for table in existing_tables
         }
-        for target in ("0004", "0005", "0006", "0007", "0003", "0007"):
+        for target in ("0004", "0005", "0006", "0007", "0008", "0003", "0008"):
             if target == "0003":
                 command.downgrade(config, target)
             else:
@@ -126,7 +127,7 @@ def test_tool_metadata_migration_preserves_existing_conversations(
         messages = connection.execute(text(
             f"SELECT {original_columns} FROM messages ORDER BY id"
         )).all()
-        for target in ("0005", "0006", "0007", "0004", "0007"):
+        for target in ("0005", "0006", "0007", "0008", "0004", "0008"):
             if target == "0004":
                 command.downgrade(config, target)
             else:
@@ -207,3 +208,37 @@ def test_append_migration_preserves_legacy_drafts_and_refuses_unsafe_downgrade(
                 command.downgrade(config, "0006")
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0007"
         assert connection.execute(text(f"SELECT {original_columns} FROM workout_drafts")).all() == before
+
+
+def test_chat_idempotency_migration_preserves_drafts_and_refuses_to_erase_retry_bindings(
+    postgres_engine: Engine,
+) -> None:
+    with postgres_engine.begin() as connection:
+        config = migration_config(connection)
+        command.downgrade(config, "0007")
+        conversation_id, owner = uuid4(), uuid4()
+        connection.execute(text(
+            "INSERT INTO conversations (id, user_id) VALUES (:id, :owner)"
+        ), {"id": conversation_id, "owner": owner})
+        connection.execute(text(
+            "INSERT INTO workout_drafts (conversation_id, state) VALUES (:id, 'discarded')"
+        ), {"id": conversation_id})
+        connection.execute(text(
+            "INSERT INTO workout_draft_appends (conversation_id, idempotency_key, set_payload) "
+            "VALUES (:id, :key, '{}')"
+        ), {"id": conversation_id, "key": uuid4()})
+        tables = ("conversations", "workout_drafts", "workout_draft_appends")
+        before = {table: connection.execute(text(f"SELECT * FROM {table}")).all() for table in tables}
+        command.upgrade(config, "head")
+        for table, rows in before.items():
+            assert connection.execute(text(f"SELECT * FROM {table}")).all() == rows
+        connection.execute(text(
+            "INSERT INTO chat_requests (id, user_id, endpoint, idempotency_key, fingerprint) "
+            "VALUES (:id, :owner, 'POST /agent/chat', :key, :fingerprint)"
+        ), {"id": uuid4(), "owner": owner, "key": uuid4(), "fingerprint": "a" * 64})
+        requests = connection.execute(text("SELECT * FROM chat_requests")).all()
+        with connection.begin_nested():
+            with pytest.raises(RuntimeError, match="Cannot downgrade 0008"):
+                command.downgrade(config, "0007")
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0008"
+        assert connection.execute(text("SELECT * FROM chat_requests")).all() == requests
