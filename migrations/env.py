@@ -3,8 +3,8 @@
 from alembic import context
 from sqlalchemy.engine import Connection
 
-from app import models  # noqa: F401 -- register all mapped tables
-from app.database import Base, create_db_engine, database_url
+from app.db import models  # noqa: F401 -- register all mapped tables
+from app.db.session import Base, create_db_engine, database_url
 
 
 def run_migrations(connection: Connection) -> None:

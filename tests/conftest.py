@@ -2,23 +2,16 @@
 
 import os
 from collections.abc import Iterator
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from alembic import command
-from alembic.config import Config
-from sqlalchemy import Connection, Engine
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateSchema, DropSchema
 
-from app.database import create_db_engine, postgres_url
-
-
-def migration_config(connection: Connection) -> Config:
-    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    config.attributes["connection"] = connection
-    return config
+from app.db.session import create_db_engine, postgres_url
+from tests.helpers import migration_config
 
 
 @pytest.fixture
