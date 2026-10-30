@@ -262,6 +262,7 @@ Message = ConversationMessage
 class WorkoutDraftRecord(Base):
     __tablename__ = "workout_drafts"
     __table_args__ = (
+        CheckConstraint("state IN ('active', 'discarded')", name="valid_state"),
         CheckConstraint("version > 0", name="positive_version"),
         CheckConstraint(
             "jsonb_typeof(payload) = 'object' AND payload ? 'sets' "
@@ -275,6 +276,7 @@ class WorkoutDraftRecord(Base):
         ForeignKey("conversations.id", ondelete="CASCADE"), primary_key=True
     )
     version: Mapped[int] = mapped_column(server_default="1")
+    state: Mapped[str] = mapped_column(String(9), server_default="active")
     payload: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{\"sets\": []}'::jsonb")
     )
@@ -284,3 +286,16 @@ class WorkoutDraftRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class WorkoutDraftAppendRecord(Base):
+    __tablename__ = "workout_draft_appends"
+    __table_args__ = (
+        CheckConstraint("jsonb_typeof(set_payload) = 'object'", name="set_payload_object"),
+    )
+
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workout_drafts.conversation_id", ondelete="CASCADE"), primary_key=True
+    )
+    idempotency_key: Mapped[UUID] = mapped_column(primary_key=True)
+    set_payload: Mapped[dict[str, Any]] = mapped_column(JSONB)

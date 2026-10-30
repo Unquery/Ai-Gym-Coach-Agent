@@ -30,6 +30,7 @@ def test_migration_can_downgrade_and_upgrade(postgres_engine: Engine) -> None:
             "conversations",
             "messages",
             "workout_drafts",
+            "workout_draft_appends",
         }
 
 
@@ -96,7 +97,7 @@ def test_conversation_migration_preserves_all_existing_tables(postgres_engine: E
             table: connection.execute(text(f"SELECT * FROM {table} ORDER BY id")).all()
             for table in existing_tables
         }
-        for target in ("0004", "0005", "0006", "0003", "0006"):
+        for target in ("0004", "0005", "0006", "0007", "0003", "0007"):
             if target == "0003":
                 command.downgrade(config, target)
             else:
@@ -125,7 +126,7 @@ def test_tool_metadata_migration_preserves_existing_conversations(
         messages = connection.execute(text(
             f"SELECT {original_columns} FROM messages ORDER BY id"
         )).all()
-        for target in ("0005", "0006", "0004", "0006"):
+        for target in ("0005", "0006", "0007", "0004", "0007"):
             if target == "0004":
                 command.downgrade(config, target)
             else:
@@ -163,6 +164,7 @@ def test_tool_metadata_downgrade_refuses_data_loss(postgres_engine: Engine) -> N
 
 def test_draft_downgrade_refuses_to_drop_persisted_state(postgres_engine: Engine) -> None:
     with postgres_engine.begin() as connection:
+        command.downgrade(migration_config(connection), "0006")
         conversation_id = uuid4()
         connection.execute(text(
             "INSERT INTO conversations (id, user_id) VALUES (:id, :owner)"
@@ -176,3 +178,32 @@ def test_draft_downgrade_refuses_to_drop_persisted_state(postgres_engine: Engine
                 command.downgrade(migration_config(connection), "0005")
         assert connection.execute(text("SELECT * FROM workout_drafts")).all() == before
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0006"
+
+
+def test_append_migration_preserves_legacy_drafts_and_refuses_unsafe_downgrade(
+    postgres_engine: Engine,
+) -> None:
+    with postgres_engine.begin() as connection:
+        config = migration_config(connection)
+        command.downgrade(config, "0006")
+        conversation_id = uuid4()
+        connection.execute(text(
+            "INSERT INTO conversations (id, user_id) VALUES (:id, :owner)"
+        ), {"id": conversation_id, "owner": uuid4()})
+        connection.execute(text(
+            "INSERT INTO workout_drafts (conversation_id, version, payload) "
+            "VALUES (:id, 3, jsonb_build_object('sets', jsonb_build_array(jsonb_build_object("
+            "'id', CAST(:set_id AS text), 'exercise_name', 'Synthetic legacy squat', "
+            "'reps', 8, 'weight_kg', NULL))))"
+        ), {"id": conversation_id, "set_id": str(uuid4())})
+        original_columns = "conversation_id, version, payload, created_at, updated_at"
+        before = connection.execute(text(f"SELECT {original_columns} FROM workout_drafts")).all()
+        command.upgrade(config, "head")
+        assert connection.execute(text(f"SELECT {original_columns} FROM workout_drafts")).all() == before
+        assert connection.scalar(text("SELECT state FROM workout_drafts")) == "active"
+        assert connection.scalar(text("SELECT count(*) FROM workout_draft_appends")) == 0
+        with connection.begin_nested():
+            with pytest.raises(RuntimeError, match="Cannot downgrade 0007"):
+                command.downgrade(config, "0006")
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0007"
+        assert connection.execute(text(f"SELECT {original_columns} FROM workout_drafts")).all() == before
