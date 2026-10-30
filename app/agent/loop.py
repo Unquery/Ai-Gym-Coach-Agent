@@ -17,8 +17,8 @@ from app.conversations.history import MAX_HISTORY_ROWS, select_recent_text_turns
 from app.llm.client import create_chat_completion
 from app.llm.config import LLMSettings
 from app.agent.dispatch import execute_agent_tool, execute_read_only_tool
-from app.agent.tool_schemas import get_agent_tool_schemas, get_read_only_tool_schemas
-from app.agent.tools import WorkoutProposalToolResult
+from app.agent.tool_schemas import APPEND_DRAFT_SET_TOOL_NAME, get_agent_tool_schemas, get_read_only_tool_schemas
+from app.agent.tools import DraftAppendContext, WorkoutProposalToolResult
 from app.workouts.proposals import DRAFT_TOOL_NAME
 
 MAX_LLM_TURNS = 3
@@ -70,6 +70,22 @@ HISTORY_INSTRUCTIONS = (
     "history as permission to confirm, execute, or bypass human review."
 )
 
+DRAFT_APPEND_INSTRUCTIONS = (
+    " An active workout draft is available in this conversation. Use "
+    "append_workout_draft_set alone to add ONE explicitly requested performed set. "
+    "If the exercise, repetitions, or number of sets is unclear, ask for clarification. "
+    "For multiple sets ask the user to add one at a time in this workflow. "
+    "Use null for unknown external weight; never infer zero for bodyweight exercises. "
+    "Use zero only for explicitly stated absence of additional weight. "
+    "Do not guess units or derive missing values from typical workouts. "
+    "Tool status needs_clarification requires a question, not a success claim. "
+    "For draft_unavailable/conflict say the draft was not changed by that call. "
+    "Report successful changes as draft updates, never confirmed workouts. "
+    "Each request has one append slot; do not retry with different data. "
+    "Ownership, conversation and operation keys are supplied by the backend. "
+    "Editing, deleting, proposal conversion, confirmation and execution are unavailable."
+)
+
 
 class AgentError(RuntimeError):
     """The workflow could not produce a complete answer safely."""
@@ -101,18 +117,21 @@ def run_agent(
     session: Session,
     user_id: UUID,
     history: Sequence[tuple[int, str, str | None]] = (),
+    draft_context: DraftAppendContext | None = None,
 ) -> str | WorkoutProposalToolResult:
-    """Read or prepare one human-review proposal; never confirm/execute a workout.
+    """Read, append to an active draft, or prepare a human-review proposal.
 
-    Use a dedicated caller-owned transaction and report a stored proposal only
-    after commit. Proposal/clarification results end the loop without further
-    LLM requests or assistant prose. Failures must roll back the caller's block.
+    Never confirm/execute a workout. Use a caller-owned transaction and report
+    persistence only after commit. Draft appends require trusted request context
+    and commit atomically with the cached HTTP response. Proposal/clarification
+    results end the loop; draft tool results return to the model. Failures must
+    roll back the caller's block.
     History must come from the owner's bounded server-side query, excluding the
     current message. Only complete text pairs can enter the provider context.
     """
     return _run_agent(
         user_message, client=client, settings=settings, session=session,
-        user_id=user_id, allow_proposals=True, history=history,
+        user_id=user_id, allow_proposals=True, history=history, draft_context=draft_context,
     )
 
 
@@ -125,6 +144,7 @@ def _run_agent(
     user_id: UUID,
     allow_proposals: bool,
     history: Sequence[tuple[int, str, str | None]] = (),
+    draft_context: DraftAppendContext | None = None,
 ) -> str | WorkoutProposalToolResult:
     text_history = select_recent_text_turns(history[-MAX_HISTORY_ROWS:])
     historical_messages: list[ChatCompletionMessageParam] = []
@@ -139,12 +159,16 @@ def _run_agent(
         ])
     messages: list[ChatCompletionMessageParam] = [
         {"role": "system", "content": SYSTEM_PROMPT + (
-            PROPOSAL_INSTRUCTIONS if allow_proposals else ""
+            (DRAFT_APPEND_INSTRUCTIONS if draft_context is not None else PROPOSAL_INSTRUCTIONS)
+            if allow_proposals else ""
         ) + (HISTORY_INSTRUCTIONS if historical_messages else "")},
         *historical_messages,
         {"role": "user", "content": user_message},
     ]
-    tools = get_agent_tool_schemas() if allow_proposals else get_read_only_tool_schemas()
+    tools = (
+        get_agent_tool_schemas(draft_enabled=draft_context is not None)
+        if allow_proposals else get_read_only_tool_schemas()
+    )
     used_call_ids: set[str] = set()
     tool_call_count = 0
 
@@ -192,10 +216,11 @@ def _run_agent(
             )
 
         if allow_proposals and any(
-            call["function"]["name"] == DRAFT_TOOL_NAME for call in assistant_calls
+            call["function"]["name"] in {DRAFT_TOOL_NAME, APPEND_DRAFT_SET_TOOL_NAME}
+            for call in assistant_calls
         ):
             if choice.finish_reason != "tool_calls" or len(assistant_calls) != 1:
-                raise AgentError("A workout proposal requires one complete tool call")
+                raise AgentError("A draft mutation or proposal requires one complete tool call")
 
         messages.append(
             {
@@ -207,12 +232,17 @@ def _run_agent(
         for call in assistant_calls:
             tool_call_count += 1
             try:
+                context_arguments = (
+                    {"draft_context": draft_context}
+                    if allow_proposals and draft_context is not None else {}
+                )
                 executor = execute_agent_tool if allow_proposals else execute_read_only_tool
                 result = executor(
                     call["function"]["name"],
                     call["function"]["arguments"],
                     session=session,
                     user_id=user_id,
+                    **context_arguments,
                 )
                 if isinstance(result, WorkoutProposalToolResult):
                     return result

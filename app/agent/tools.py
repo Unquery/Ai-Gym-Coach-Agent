@@ -1,9 +1,10 @@
 """Typed agent tools; identity and database sessions come from server code."""
 
+from dataclasses import dataclass
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
-from pydantic import AwareDatetime, BaseModel
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,9 +13,15 @@ from app.workouts.progress import ExerciseWorkoutProgress, analyze_exercise_prog
 from app.workouts.proposal_store import create_workout_proposal
 from app.workouts.queries import get_exercise_workouts, get_workout_history
 from app.workouts.schemas import WorkoutDetailRead, WorkoutRead
+from app.workouts.drafts import (
+    PersistentWorkoutDraftSet, WorkoutDraftConflictError, WorkoutDraftExerciseNotFoundError,
+    WorkoutDraftInactiveError, WorkoutDraftNotFoundError, append_workout_draft_set,
+    get_workout_draft,
+)
 from app.agent.tool_schemas import GetExerciseProgressInput, GetRecentWorkoutsInput
 from app.workouts.proposals import (
-    WorkoutLoggingDraft, WorkoutLoggingProposal, resolve_workout_logging,
+    WorkoutLoggingDraft, WorkoutLoggingProposal, WorkoutProposalIssue, WorkoutSetDraft,
+    resolve_workout_logging,
 )
 
 
@@ -29,6 +36,70 @@ class ExerciseProgressResult(BaseModel):
 class WorkoutProposalToolResult(WorkoutLoggingProposal):
     proposal_id: UUID | None = None
     expires_at: AwareDatetime | None = None
+
+
+@dataclass(frozen=True)
+class DraftAppendContext:
+    """Trusted backend context, never model-selected tool arguments.
+
+    The caller owns the conversation and durable request execution locks, and
+    commits the draft change together with its completed HTTP response.
+    """
+
+    conversation_id: UUID
+    request_id: UUID
+
+
+class DraftAppendToolResult(BaseModel):
+    status: Literal["appended", "needs_clarification", "draft_unavailable", "conflict"]
+    appended_set: PersistentWorkoutDraftSet | None = None
+    draft_version: int | None = None
+    issues: list[WorkoutProposalIssue] = Field(default_factory=list)
+
+
+def append_set_to_active_draft(
+    arguments: WorkoutSetDraft, *, context: DraftAppendContext,
+    session: Session, user_id: UUID,
+) -> DraftAppendToolResult:
+    """One append slot per server request; no model-generated idempotency keys."""
+    try:
+        draft = get_workout_draft(context.conversation_id, session=session, user_id=user_id)
+        if draft.state != "active":
+            return DraftAppendToolResult(status="draft_unavailable")
+        resolved = resolve_workout_logging(WorkoutLoggingDraft(sets=[arguments]), session=session)
+        # Drafts can retain unknown weight, but not a guessed exercise or rep count.
+        issues = [issue for issue in resolved.issues if issue.code != "missing_weight"]
+        if issues:
+            return DraftAppendToolResult(status="needs_clarification", issues=issues)
+        candidate = resolved.sets[0]
+        with session.no_autoflush:
+            name = session.scalar(select(Exercise.name).where(
+                Exercise.id == candidate.exercise_id,
+            ).with_for_update(read=True))
+        if name is None or name != candidate.catalog_name:
+            return DraftAppendToolResult(status="needs_clarification", issues=[
+                WorkoutProposalIssue(code="unknown_exercise", set_index=0),
+            ])
+        assert candidate.exercise_id is not None
+        saved = append_workout_draft_set(
+            context.conversation_id, exercise_id=candidate.exercise_id,
+            reps=arguments.reps, weight_kg=arguments.weight_kg,
+            idempotency_key=uuid5(context.request_id, "draft-append"),
+            session=session, user_id=user_id,
+        )
+    except (WorkoutDraftNotFoundError, WorkoutDraftInactiveError):
+        return DraftAppendToolResult(status="draft_unavailable")
+    except WorkoutDraftExerciseNotFoundError:
+        return DraftAppendToolResult(status="needs_clarification", issues=[
+            WorkoutProposalIssue(code="unknown_exercise", set_index=0),
+        ])
+    except WorkoutDraftConflictError:
+        return DraftAppendToolResult(status="conflict")
+    # The execution transaction retains the draft lock; no other writer can
+    # change its final set between this append and a matching retry in this turn.
+    return DraftAppendToolResult(
+        status="appended", appended_set=saved.payload.sets[-1], draft_version=saved.version,
+    )
 
 
 def create_workout_logging_proposal(

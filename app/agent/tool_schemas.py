@@ -3,7 +3,9 @@ from typing import Annotated, Self
 from openai.types.chat import ChatCompletionToolUnionParam
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from app.workouts.proposals import DRAFT_TOOL_NAME, WorkoutLoggingDraft
+from app.workouts.proposals import DRAFT_TOOL_NAME, WorkoutLoggingDraft, WorkoutSetDraft
+
+APPEND_DRAFT_SET_TOOL_NAME = "append_workout_draft_set"
 
 
 class GetRecentWorkoutsInput(BaseModel):
@@ -62,8 +64,23 @@ def get_read_only_tool_schemas() -> list[ChatCompletionToolUnionParam]:
     ]
 
 
-def get_agent_tool_schemas() -> list[ChatCompletionToolUnionParam]:
-    """Allow catalog-validated pending proposals alongside the existing read tools."""
+def get_agent_tool_schemas(*, draft_enabled: bool = False) -> list[ChatCompletionToolUnionParam]:
+    """Expose reads and either draft append or pending proposal creation."""
+    if draft_enabled:
+        return [*get_read_only_tool_schemas(), {
+            "type": "function",
+            "function": {
+                "name": APPEND_DRAFT_SET_TOOL_NAME,
+                "description": (
+                    "Append one explicitly requested performed set to the current active draft. "
+                    "Supply only exercise_name, reps and weight_kg (external kilograms). "
+                    "Use null for unknown reps or weight; zero requires explicit absence "
+                    "of additional weight. Unknown/ambiguous exercise or reps require "
+                    "clarification. Request this tool alone. This never confirms or logs a workout."
+                ),
+                "parameters": WorkoutSetDraft.model_json_schema(),
+            },
+        }]
     return [*get_read_only_tool_schemas(), {
         "type": "function",
         "function": {

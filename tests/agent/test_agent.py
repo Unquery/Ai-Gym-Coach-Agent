@@ -168,6 +168,7 @@ def test_agent_sends_typed_tool_result_with_matching_call_id(
     "name, arguments, error_code",
     [
         ("log_workout_set", "not-json", "unknown_tool"),
+        ("append_workout_draft_set", '{"exercise_name":"Pull-up","reps":5,"weight_kg":null}', "unknown_tool"),
         ("get_recent_workouts", "not-json", "invalid_arguments"),
         ("get_recent_workouts", "[]", "invalid_arguments"),
         ("get_recent_workouts", '{"limit":0}', "invalid_arguments"),

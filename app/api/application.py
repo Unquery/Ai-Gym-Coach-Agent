@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
 from app.agent.loop import AgentError, run_agent
+from app.agent.tools import DraftAppendContext
 from app.api.schemas import (
     AgentAnswerResponse,
     AgentChatRequest,
@@ -63,6 +64,7 @@ from app.workouts.execution import (
     ProposalNotConfirmedError,
     execute_confirmed_workout,
 )
+from app.workouts.drafts import WorkoutDraftNotFoundError, get_workout_draft
 
 app = FastAPI(title="AI Gym Coach")
 
@@ -97,6 +99,7 @@ async def get_chat_idempotency(
 
 def _run_chat_turn(
     payload: AgentChatRequest, *, session: Session, user_id: UUID,
+    request_id: UUID | None = None,
 ) -> AgentAnswerResponse | AgentProposalResponse:
     """Run inside the caller's transaction; this helper never commits."""
     try:
@@ -121,10 +124,20 @@ def _run_chat_turn(
         conversation_id, before_position=current_message.position,
         session=session, user_id=user_id,
     )
+    draft_context = None
+    if request_id is not None:
+        try:
+            draft = get_workout_draft(conversation_id, session=session, user_id=user_id)
+        except WorkoutDraftNotFoundError:
+            pass
+        else:
+            if draft.state == "active":
+                draft_context = DraftAppendContext(conversation_id=conversation_id, request_id=request_id)
     with create_llm_client(settings) as client:
         result = run_agent(
             payload.message, client=client, settings=settings,
             session=session, user_id=user_id, history=history,
+            **({"draft_context": draft_context} if draft_context is not None else {}),
         )
     response: AgentAnswerResponse | AgentProposalResponse
     if isinstance(result, str):
@@ -173,9 +186,9 @@ def agent_chat(
                     status_code=stored.response_status, content=stored.response_body,
                 )
             else:
-                response = _run_chat_turn(payload, session=session, user_id=user_id)
+                response = _run_chat_turn(payload, session=session, user_id=user_id, request_id=request_id)
                 if stored is not None:
-                    # This update and every conversation/proposal write commit atomically.
+                    # This update and all conversation/draft/proposal writes commit atomically.
                     complete_chat_request(
                         stored.id, conversation_id=response.conversation_id,
                         response_status=200, response_body=response.model_dump(mode="json"),

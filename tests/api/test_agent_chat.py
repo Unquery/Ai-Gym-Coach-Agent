@@ -1,8 +1,11 @@
 import json
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
+from threading import Event
 from typing import Any
 from unittest.mock import MagicMock
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import httpx2
 import pytest
@@ -14,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.schemas import AgentAnswerResponse, AgentProposalResponse
+from app.agent.tool_schemas import APPEND_DRAFT_SET_TOOL_NAME
 from app.conversations.store import (
     append_message, create_conversation, get_conversation_messages, get_recent_conversation_history,
 )
@@ -22,8 +26,10 @@ from app.llm.client import create_llm_client
 from app.llm.config import LLMSettings
 from app.api.application import app, get_demo_user_id
 from app.db.models import (
-    Conversation, ConversationMessage, Exercise, Workout, WorkoutProposalRecord, WorkoutSet,
+    ChatRequestRecord, Conversation, ConversationMessage, Exercise, Workout,
+    WorkoutDraftAppendRecord, WorkoutDraftRecord, WorkoutProposalRecord, WorkoutSet,
 )
+from app.workouts.drafts import append_workout_draft_set, create_workout_draft, get_workout_draft
 from app.workouts.proposal_store import (
     ProposalNotFoundError,
     decide_workout_proposal,
@@ -56,12 +62,13 @@ def completion_response(
     *,
     tool_name: str | None = None,
     arguments: dict[str, Any] | None = None,
+    call_id: str = "synthetic_call",
 ) -> httpx2.Response:
     message: dict[str, Any] = {"role": "assistant", "content": content}
     if tool_name:
         message["tool_calls"] = [
             {
-                "id": "synthetic_call",
+                "id": call_id,
                 "type": "function",
                 "function": {
                     "name": tool_name,
@@ -150,6 +157,265 @@ def postgres_chat(
     monkeypatch.setattr("app.api.application.append_message", append_message)
     monkeypatch.setattr("app.api.application.get_recent_conversation_history", get_recent_conversation_history)
     return chat_context, exercise_id, owner
+
+
+@pytest.fixture
+def active_chat_draft(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+) -> UUID:
+    _, _, owner = postgres_chat
+    with Session(postgres_engine) as session, session.begin():
+        conversation = create_conversation(session=session, user_id=owner)
+        create_workout_draft(conversation.id, session=session, user_id=owner)
+        return conversation.id
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("weight", [None, "0"])
+def test_chat_appends_to_active_draft_and_replays_without_llm(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    active_chat_draft: UUID, weight: str | None,
+) -> None:
+    (api, requests, responses, _), exercise_id, owner = postgres_chat
+    key = uuid4()
+    headers = {"Idempotency-Key": str(key)}
+    body = {"message": "Add one synthetic pull-up set, 5 reps.", "conversation_id": str(active_chat_draft)}
+    responses.extend([
+        completion_response(tool_name="get_recent_workouts", call_id="history"),
+        completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, call_id="append", arguments={
+            "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": weight,
+        }),
+        completion_response("The set was added to your draft for later review."),
+    ])
+    first = api.post("/agent/chat", headers=headers, json=body)
+    assert first.status_code == 200
+    assert len(requests) == 3
+    tools = {tool["function"]["name"]: tool["function"] for tool in requests[0]["tools"]}
+    assert set(tools) == {"get_recent_workouts", "get_exercise_progress", APPEND_DRAFT_SET_TOOL_NAME}
+    schema = tools[APPEND_DRAFT_SET_TOOL_NAME]["parameters"]
+    assert set(schema["properties"]) == {"exercise_name", "reps", "weight_kg"}
+    assert schema["additionalProperties"] is False
+    assert json.loads(requests[1]["messages"][-1]["content"]) == []
+    result = json.loads(requests[2]["messages"][-1]["content"])
+    assert result["status"] == "appended" and result["draft_version"] == 2
+
+    replay = api.post("/agent/chat", headers=headers, json=body)
+    assert replay.status_code == 200 and replay.json() == first.json()
+    assert len(requests) == 3
+    with Session(postgres_engine) as session:
+        draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
+        assert draft.version == 2 and len(draft.payload.sets) == 1
+        saved = draft.payload.sets[0]
+        assert saved.exercise_id == exercise_id and saved.reps == 5
+        assert saved.weight_kg == (None if weight is None else Decimal("0"))
+        assert result["appended_set"] == saved.model_dump(mode="json")
+        request = session.scalars(select(ChatRequestRecord)).one()
+        receipt = session.scalars(select(WorkoutDraftAppendRecord)).one()
+        assert request.id != key and request.state == "completed"
+        assert receipt.idempotency_key == uuid5(request.id, "draft-append")
+        assert receipt.conversation_id == active_chat_draft
+        for model in (Workout, WorkoutSet, WorkoutProposalRecord):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("second_reps, expected_status", [(5, "appended"), (6, "conflict")])
+def test_repeated_model_calls_share_one_server_append_slot(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    active_chat_draft: UUID, second_reps: int, expected_status: str,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    responses.extend([
+        completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, call_id=call_id, arguments={
+            "exercise_name": "Synthetic chat pull-up", "reps": reps, "weight_kg": None,
+        }) for call_id, reps in (("first", 5), ("second", second_reps))
+    ])
+    responses.append(completion_response("Draft status reported."))
+    response = api.post("/agent/chat", headers={"Idempotency-Key": str(uuid4())}, json={
+        "message": "Add one set of 5 reps.", "conversation_id": str(active_chat_draft),
+    })
+    assert response.status_code == 200
+    result = json.loads(requests[-1]["messages"][-1]["content"])
+    assert result["status"] == expected_status
+    with Session(postgres_engine) as session:
+        draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
+        assert draft.version == 2 and len(draft.payload.sets) == 1
+        assert draft.payload.sets[0].reps == 5
+        assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 1
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("case, expected", [
+    ("unknown", "unknown_exercise"), ("ambiguous", "ambiguous_exercise"),
+    ("missing_reps", "missing_reps"), ("user_id", "invalid_arguments"),
+    ("idempotency_key", "invalid_arguments"),
+])
+def test_draft_append_requests_clarification_or_rejects_untrusted_arguments(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    active_chat_draft: UUID, case: str, expected: str,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    arguments: dict[str, Any] = {
+        "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
+    }
+    if case == "unknown":
+        arguments["exercise_name"] = "Unknown synthetic exercise"
+    elif case == "ambiguous":
+        with Session(postgres_engine) as session, session.begin():
+            session.add(Exercise(name="SYNTHETIC CHAT PULL-UP"))
+    elif case == "missing_reps":
+        arguments["reps"] = None
+    else:
+        arguments[case] = str(uuid4())
+    responses.extend([
+        completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments=arguments),
+        completion_response("Please clarify the set details."),
+    ])
+    response = api.post("/agent/chat", headers={"Idempotency-Key": str(uuid4())}, json={
+        "message": "Add this set.", "conversation_id": str(active_chat_draft),
+    })
+    assert response.status_code == 200
+    result = json.loads(requests[-1]["messages"][-1]["content"])
+    if expected == "invalid_arguments":
+        assert result == {"error": {"code": expected}}
+    else:
+        assert result["status"] == "needs_clarification"
+        assert [issue["code"] for issue in result["issues"]] == [expected]
+    with Session(postgres_engine) as session:
+        draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
+        assert draft.version == 1 and draft.payload.sets == []
+        assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 0
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("unavailable", ["unkeyed", "absent", "discarded"])
+def test_append_tool_requires_durable_request_and_active_draft(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    active_chat_draft: UUID, unavailable: str,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    conversation_id = active_chat_draft
+    with Session(postgres_engine) as session, session.begin():
+        if unavailable == "absent":
+            conversation_id = create_conversation(session=session, user_id=owner).id
+        elif unavailable == "discarded":
+            session.get(WorkoutDraftRecord, active_chat_draft).state = "discarded"
+    responses.extend([
+        completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments={
+            "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
+        }),
+        completion_response("An active draft and request key are required."),
+    ])
+    headers = {} if unavailable == "unkeyed" else {"Idempotency-Key": str(uuid4())}
+    response = api.post("/agent/chat", headers=headers, json={
+        "message": "Add one set.", "conversation_id": str(conversation_id),
+    })
+    assert response.status_code == 200
+    assert APPEND_DRAFT_SET_TOOL_NAME not in {tool["function"]["name"] for tool in requests[0]["tools"]}
+    assert json.loads(requests[-1]["messages"][-1]["content"]) == {"error": {"code": "unknown_tool"}}
+    with Session(postgres_engine) as session:
+        assert session.scalar(select(func.count()).select_from(WorkoutDraftRecord)) == 1
+        assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 0
+
+
+@pytest.mark.postgres
+def test_append_rolls_back_on_provider_failure_and_retries_with_same_identity(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID], active_chat_draft: UUID,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    headers = {"Idempotency-Key": str(uuid4())}
+    body = {"message": "Add one set of 5 reps.", "conversation_id": str(active_chat_draft)}
+    append = completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments={
+        "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
+    })
+    responses.extend([append, httpx2.Response(500, json={"error": {"message": "Synthetic failure"}})])
+    assert api.post("/agent/chat", headers=headers, json=body).status_code == 502
+    with Session(postgres_engine) as session:
+        draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
+        assert draft.version == 1 and draft.payload.sets == []
+        assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 0
+        assert session.scalar(select(func.count()).select_from(ConversationMessage)) == 0
+        request = session.scalars(select(ChatRequestRecord)).one()
+        assert request.state == "processing"
+        request_id = request.id
+    responses.extend([append, completion_response("Added to the draft.")])
+    success = api.post("/agent/chat", headers=headers, json=body)
+    assert success.status_code == 200
+    assert api.post("/agent/chat", headers=headers, json=body).json() == success.json()
+    assert len(requests) == 4
+    with Session(postgres_engine) as session:
+        request = session.scalars(select(ChatRequestRecord)).one()
+        assert request.id == request_id and request.state == "completed"
+        draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
+        assert draft.version == 2 and len(draft.payload.sets) == 1
+        assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 1
+        assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+
+
+@pytest.mark.postgres
+def test_concurrent_chat_retry_cannot_append_twice(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    active_chat_draft: UUID, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    entered, release = Event(), Event()
+
+    def blocked_append(*args: Any, **kwargs: Any) -> Any:
+        result = append_workout_draft_set(*args, **kwargs)
+        entered.set()
+        assert release.wait(timeout=10), "Concurrent retry did not finish"
+        return result
+
+    monkeypatch.setattr("app.agent.tools.append_workout_draft_set", blocked_append)
+    responses.extend([
+        completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments={
+            "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
+        }),
+        completion_response("Added to the draft."),
+    ])
+    headers = {"Idempotency-Key": str(uuid4())}
+    body = {"message": "Add one set of 5 reps.", "conversation_id": str(active_chat_draft)}
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(api.post, "/agent/chat", headers=headers, json=body)
+        try:
+            assert entered.wait(timeout=10), "First request did not append"
+            concurrent = api.post("/agent/chat", headers=headers, json=body)
+            assert concurrent.status_code == 409
+            assert concurrent.json()["detail"]["code"] == "request_in_progress"
+        finally:
+            release.set()
+        completed = first.result(timeout=10)
+    assert completed.status_code == 200
+    assert api.post("/agent/chat", headers=headers, json=body).json() == completed.json()
+    assert len(requests) == 2
+    with Session(postgres_engine) as session:
+        draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
+        assert draft.version == 2 and len(draft.payload.sets) == 1
+        assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 1
+
+
+@pytest.mark.postgres
+def test_append_in_mixed_tool_batch_is_rejected_before_mutation(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID], active_chat_draft: UUID,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    batch = completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments={
+        "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
+    }).json()
+    batch["choices"][0]["message"]["tool_calls"].append({
+        "id": "forbidden", "type": "function",
+        "function": {"name": "confirm_workout", "arguments": "{}"},
+    })
+    responses.append(httpx2.Response(200, json=batch))
+    response = api.post("/agent/chat", headers={"Idempotency-Key": str(uuid4())}, json={
+        "message": "Add one set.", "conversation_id": str(active_chat_draft),
+    })
+    assert response.status_code == 502 and len(requests) == 1
+    with Session(postgres_engine) as session:
+        draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
+        assert draft.version == 1 and draft.payload.sets == []
+        for model in (WorkoutDraftAppendRecord, Workout, WorkoutSet, WorkoutProposalRecord):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
 
 
 def test_chat_returns_a_tagged_answer_and_closes_the_client(
