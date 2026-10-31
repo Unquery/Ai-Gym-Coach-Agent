@@ -1,7 +1,7 @@
 # Roadmap
 
-Current milestone: **6 — Conversation Memory & Multi-Turn AI Agent (in progress)**.
-Milestones 1–5 are complete for the scope below. This milestone list replaces the
+**Milestones 1–6 are complete for the verified scope below.** The next work is
+the remaining backend MVP priorities. This list replaces the
 earlier zero-based phase numbering, which mixed completed work with future scope.
 
 ## Milestone status
@@ -13,29 +13,35 @@ earlier zero-based phase numbering, which mixed completed work with future scope
 | 3 — Workout HTTP APIs | Complete | Exercise reads/creation, workout/set creation, workout details/history, validation and owner filtering; PostgreSQL-backed API tests and recorded local HTTP verification. |
 | 4 — LLM and read-only agent | Complete | Configurable OpenAI-compatible client, bounded tool-calling loop, `get_recent_workouts`, and deterministic `get_exercise_progress`; mocked LLM/PostgreSQL tests and recorded synthetic Groq history/progress scenarios. |
 | 5 — Confirmed workout logging | Complete | Catalog-validated proposals, PostgreSQL lifecycle, atomic/idempotent workout execution, chat and confirm/reject HTTP routes; mocked-provider PostgreSQL workflow tests and recorded live Groq logging followed by separate human HTTP confirmation. |
-| 6 — Conversation Memory & Multi-Turn AI Agent | In progress | Conversation/message models and Alembic `0004`–`0005`, including tool metadata storage, are implemented and PostgreSQL-tested. Chat persistence, context loading, and multi-turn integration are not implemented. |
+| 6 — Conversation Memory & Multi-Turn AI Agent | Complete | Owner-scoped transactional chat, bounded memory, versioned draft append/edit/remove, saved-draft proposals and durable HTTP retries; migrations `0004`–`0008`. Verified by offline PostgreSQL tests and separately approved real HTTP/Groq scenarios followed by human confirmation. |
 
-"Tested" refers to recorded runs, including targeted storage tests for `0005`;
-it does not imply a full-suite rerun. "Live-verified" refers only to explicitly
+The 2026-10-31 closure audit passed all 772 tests without skips or warnings.
+"Live-verified" refers only to explicitly
 authorized synthetic scenarios; it does not establish general model reliability
 or production readiness.
 See [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md#verification-status) for evidence and limits.
 
-## Milestone 6 remaining work
+## Milestone 6 completion checklist
 
 - [x] Add `Conversation` and ordered `Message` models, relationships, database constraints, migration `0004`, and PostgreSQL preservation tests.
 - [x] Extend storage with `ConversationMessage` (`Message` alias), assistant tool calls/tool results, migration `0005`, and legacy-data/downgrade protection tests.
-- [ ] Add owner-scoped conversation/message access and concurrency-safe position allocation.
-- [ ] Extend the chat contract to identify a conversation and persist turns transactionally.
-- [ ] Load bounded conversation history into subsequent agent runs; preserve existing tool-call and consent boundaries.
-- [ ] Decide how structured proposal results are represented across turns; message storage supports text and tool metadata but is not yet connected to chat.
-- [ ] Add mocked-LLM/PostgreSQL multi-turn tests for isolation, ordering, failures, and confirmation safety.
-- [ ] Complete an explicitly authorized end-to-end multi-turn verification before closing the milestone.
+- [x] Add owner-scoped conversation/message access and concurrency-safe position allocation.
+- [x] Extend the chat contract with conversation IDs and persist complete turns transactionally.
+- [x] Load bounded text history; keep historical proposal JSON as context, never proof of consent. Chat does not replay/store its intermediate tool protocol.
+- [x] Add versioned draft services and allowlisted append/edit/remove tools; clarify ambiguous targets and preserve unknown versus zero load.
+- [x] Convert the current saved draft into an immutable pending proposal without model-supplied sets; retain separate human confirmation.
+- [x] Add durable owner/endpoint-scoped HTTP idempotency and atomic response/turn/draft/proposal persistence.
+- [x] Add mocked-LLM/PostgreSQL tests for isolation, ordering, concurrent changes, rollback, retries and HITL safety.
+- [x] Complete approved synthetic real HTTP/Groq verification and separately approved confirmation; verify PostgreSQL contents and confirmation replay.
 
-Each item is a separate incremental task requiring agreement before implementation.
-No vector database, embeddings, or RAG are part of this milestone. The existence
-of migrations `0004`–`0005` does not mean they have been applied to an existing
-demo database.
+Completion covers the agreed backend memory/draft workflow. Production readiness
+requires the remaining security and deployment work below.
+Empty drafts are initialized by trusted backend services/test setup; there is no
+draft-creation HTTP endpoint or automatic creation. Drafts remain independent of
+immutable proposals after submission. Streaming, automatic tool-trace persistence,
+and a public draft-management API are not part of the verified scope.
+No vector database, embeddings, or RAG are included. Migrations `0004`–`0008`
+were verified in isolated schemas; no demo-database upgrade is implied.
 
 ## Remaining backend priorities
 

@@ -19,23 +19,27 @@ Docker Compose currently runs the database only.
 
 | Boundary | Implementation |
 | --- | --- |
-| HTTP and transactions | `app.main`, `app.schemas`, `app.agent_schemas`; request-scoped sessions and server-selected demo identity. |
-| Agent and provider | `app.agent`, `app.llm`, `app.llm_config`; bounded runs, typed responses, no implicit cross-request history. |
-| Tool authorization and validation | `app.tool_dispatch`, `app.tool_schemas`, `app.tools`; two read tools and pending proposal creation only. |
-| Deterministic reads/calculations | `app.queries`, `app.progress`; owner-filtered SQL and Decimal metrics. |
-| Workout proposals and consent | `app.workout_proposals`, `app.proposal_store`, `app.workout_execution`; catalog resolution, immutable snapshots, row locks, atomic confirmed writes. |
-| Storage | `app.database`, `app.models`, Alembic `0001`–`0005`; eight tables at migration head. Conversation storage supports tool metadata but is not yet connected to chat. |
+| HTTP and transactions | `app.main:app` entry point, `app.api.application`, `app.api.schemas`, `app.workouts.schemas`; request-scoped sessions and server-selected demo identity. |
+| Agent and provider | `app.agent.loop`, `app.llm.client`, `app.llm.config`; bounded runs, typed results and server-loaded conversation context. |
+| Tool authorization and validation | `app.agent.dispatch`, `app.agent.tool_schemas`, `app.agent.tools`; two reads plus either direct pending proposals or active-draft append/edit/remove/conversion. No confirmation/execution tools. |
+| Conversation memory | `app.conversations.store`, `app.conversations.history`; owner-scoped row locks, ordered turns, bounded complete text pairs. |
+| Durable HTTP retries | `app.api.idempotency`; owner/endpoint/key binding, raw-JSON fingerprint and atomically cached response. |
+| Deterministic reads/calculations | `app.workouts.queries`, `app.workouts.progress`; owner-filtered SQL and Decimal metrics. |
+| Workout proposals and consent | `app.workouts.proposals`, `app.workouts.proposal_store`, `app.workouts.execution`; catalog resolution, immutable snapshots, row locks, atomic confirmed writes. |
+| Draft state | `app.workouts.drafts`; ordered UUID sets, optimistic versions, active state, parent-then-draft locks and immutable append receipts. |
+| Storage | `app.db.session`, `app.db.models`, Alembic `0001`–`0008`; 11 tables at migration head. Chat stores completed text/JSON turns; tool metadata is supported for explicit storage callers. |
 
 Complete the API-first, client-independent backend MVP before starting frontend
 or mobile application development.
 
 ## Development priorities
 
-1. Complete Milestone 6 incrementally: owner-scoped conversation access, safe message ordering, chat persistence, bounded context loading, and multi-turn tests/integration.
-2. Add workout planning and plan-retrieval tools; retain explicit human confirmation for AI-proposed workout writes.
-3. Add real authentication, deployment role separation, broader security hardening, systematic evaluations, and observability. Existing error handling and safety tests must be preserved.
-4. Prepare application Docker deployment and verify the complete backend MVP end to end.
-5. Only after backend MVP verification, start frontend development, preferably an Android application using Kotlin and Jetpack Compose.
+Milestones 1–6 are complete for their verified scope. Remaining priorities:
+
+1. Add workout planning and plan-retrieval tools; retain explicit human confirmation for AI-proposed workout writes.
+2. Add real authentication, deployment role separation, broader security hardening, systematic evaluations, and observability. Existing error handling and safety tests must be preserved.
+3. Prepare application Docker deployment and verify the complete backend MVP end to end.
+4. Only after backend MVP verification, start frontend development, preferably an Android application using Kotlin and Jetpack Compose.
 
 Keep frontend-specific behavior in client applications; agent and database layers
 remain client-independent. Expose backend capabilities through stable API
@@ -98,7 +102,7 @@ include `get_recent_workouts` and `get_exercise_progress` with deterministic
 statistics. `GetRecentWorkoutsInput` validates strict integer pagination with the same
 defaults/bounds as the API and rejects unknown fields. Server code supplies the
 session and owner separately; the tool returns `list[WorkoutRead]`. The HTTP
-history route and tool share an owner-filtered query in `app.queries`, with
+history route and tool share an owner-filtered query in `app.workouts.queries`, with
 autoflush disabled so reads cannot flush pending changes. The tool does not
 manage transactions. Authentication remains planned.
 The implemented progress tool reuses tested calculations, described below.
@@ -130,7 +134,7 @@ cannot create proposals or workouts; HTTP chat uses the separate `run_agent`
 entry described below. Mocked LLM tests include a real PostgreSQL ownership
 check in a disposable schema.
 
-Deterministic exercise calculations now live in `app.progress`.
+Deterministic exercise calculations now live in `app.workouts.progress`.
 `analyze_exercise_progress(exercise_id, workouts)` accepts already loaded
 `WorkoutDetailRead` records for one owner and returns typed session metrics:
 set/repetition counts, maximum external weight, Decimal external volume in
@@ -156,7 +160,7 @@ result and its prompt requires returned statistics and honest missing-data
 responses, without inferring bodyweight effort or strength improvement.
 
 The standalone workout logging proposal step remains available in
-`app.workout_proposals`. One explicit
+`app.workouts.proposals`. One explicit
 LLM call extracts a nonempty ordered set list; required nullable reps/external
 weights distinguish missing values from explicit zero, with existing numeric
 validation limits. The model is instructed to preserve source names and leave
@@ -171,7 +175,7 @@ executed; invalid/extra arguments, write-tool calls, truncated responses, and
 multiple calls fail safely before SQL. Assistant prose cannot claim persistence
 through this result. The function never writes or manages transactions.
 Pydantic does not establish extraction fidelity; human review remains required.
-Confirmation storage is now a separate backend step in `app.proposal_store`.
+Confirmation storage is now a separate backend step in `app.workouts.proposal_store`.
 Revision `0002` adds `workout_proposals`: server-generated UUID v4, server-selected
 owner, immutable typed set snapshot in JSONB, state, and timestamps. Only complete
 proposals with no issues can become pending; payloads are revalidated before SQL.
@@ -185,7 +189,7 @@ replay without repeating a transition. Unknown/foreign IDs are indistinguishable
 dedicated session/transaction and commits before reporting success. Core DML and
 disabled autoflush prevent store methods from flushing unrelated ORM objects.
 These functions never create workouts/sets and are not advertised to the LLM.
-The store records confirmed consent only; the separate `app.workout_execution` service
+The store records confirmed consent only; the separate `app.workouts.execution` service
 executes it atomically in the caller's transaction. Revision `0003` adds a nullable
 unique execution link from proposals to same-owner workouts and nullable global
 set positions for backward compatibility. A row lock serializes execution/replay;
@@ -212,9 +216,9 @@ roll back. One run creates at most one proposal; separate runs can create new
 pending snapshots. Neither confirmation nor workout execution is registered as
 an agent tool. Human-action HTTP routing is described below; authentication remains planned.
 
-`POST /agent/chat` now provides the minimal synchronous HTTP adapter for run_agent.
-Its strict message-only request trims whitespace, limits length to 1–4000 and
-forbids extra fields. Server-side demo identity and request-scoped sessions are
+Milestone 5 added the synchronous `POST /agent/chat` adapter for run_agent.
+Its strict message field trims whitespace and limits length to 1–4000;
+Milestone 6 adds optional conversation_id, as described below. Server-side demo identity and request-scoped sessions are
 injected; authentication remains planned. Successful JSON uses `type="answer"`
 with text or `type="proposal"` with the existing structured human-review result.
 Pending/clarification status stays explicit, and Decimal weights serialize as
@@ -224,7 +228,7 @@ errors handle provider/network/agent/configuration/commit failures without raw
 diagnostics. The existing 30-second SDK timeout is not an overall conversation
 deadline; automatic retries remain disabled. Chat cannot confirm or execute
 workouts, including proposals already confirmed through a trusted backend action.
-Conversation persistence and UI remain outside this adapter.
+Conversation persistence is now integrated below; UI remains deferred.
 
 Separate `POST /workout-proposals/{proposal_id}/confirm` and `/reject` actions
 accept an omitted/empty body and forbid client fields, including snapshot edits
@@ -245,18 +249,53 @@ decisions, ownership, expiry, forbidden edits and insert/commit failure recovery
 
 ## Conversation storage (Milestone 6)
 
-Milestone 5 workout logging and explicit human confirmation are complete.
-Milestone 6 begins with PostgreSQL conversation persistence: revision `0004`
-adds owner-bound `Conversation` records and ordered messages without changing
-workout tables. Revision `0005` adds assistant `tool_calls` JSONB and tool-result
-`tool_call_id`, with role/content constraints. The model is `ConversationMessage`;
-`Message` remains an import alias. Existing text and workout/proposal data are
-preserved; downgrade refuses metadata loss. Explicit positive positions preserve
-order independently of timestamps. Ownership is inherited
-through the conversation and must be checked by future access operations.
-The storage schema is not yet used by `/agent/chat`: history/context loading,
-structured proposal responses, automatic tool-trace persistence, and multi-turn
-LLM integration remain separate tasks. See [DATABASE.md](DATABASE.md#conversation-history).
+Milestone 6 is complete. Revision `0004` adds owner-bound conversations/ordered
+messages; `0005` adds tool metadata; `0006` adds draft snapshots; `0007` adds
+active/discarded state and append receipts; `0008` adds durable chat request
+bindings. Existing workout/proposal data and legacy messages are preserved.
+`ConversationMessage` retains the `Message` import alias.
+
+`POST /agent/chat` accepts message plus optional conversation_id and returns the
+conversation ID in both tagged response variants. Omitting the ID creates a new
+owned conversation. The parent row lock serializes complete user/assistant turns;
+success is returned only after the messages and any draft/proposal writes commit.
+Assistant proposal/clarification results are stored as JSON text. Intermediate
+tool calls/results and system instructions are not automatically stored by chat.
+
+The history query loads at most 20 earlier rows for the trusted owner. Selection
+keeps at most five complete text pairs / 20,000 characters; each message must fit
+4,000 characters. Oversized/invalid messages and tool traces form barriers rather
+than being truncated or replayed. The current message is excluded. History,
+including old proposal JSON, is untrusted context, never consent or proof of a
+workout. Pairs containing the configured provider key are omitted.
+
+Optional UUID Idempotency-Key binds owner/endpoint/key to canonicalized raw JSON
+before trimming/defaults. A short transaction retains the fingerprint even after
+execution failure. Execution uses NOWAIT row locking, then conversation locking;
+contention returns 409 request_in_progress / Retry-After: 1. Changed input returns
+409 idempotency_key_reused. Completed replay rechecks ownership and returns stored
+status/body without LLM setup, tools or new messages. The completed response and
+all turn changes commit together. Rolled-back attempts may repeat provider calls;
+different keys are new requests, not content deduplication.
+
+Keyed chats with an existing active owned draft expose reads plus append, update,
+remove and no-argument propose_workout_draft_logging. Other chats retain the direct
+proposal workflow. Draft writes reuse validation/ownership/catalog checks, stable
+set UUIDs, parent-then-draft locks and versions. Backend context supplies the current
+snapshot/version and stable request identity; append keys are derived server-side.
+Updates preserve omitted fields; null means unknown and explicit zero means no
+added load. Ambiguous targets require clarification. Calls must stand alone; one
+successful mutation per request is allowed, with receipt-backed matching append
+replay. Clarification/conflict/unavailability blocks further draft writes that turn.
+
+Conversion uses the saved snapshot, not model-supplied sets, and rejects incomplete
+or empty data and catalog rebinding. It creates only an immutable pending proposal.
+Draft edits after submission cannot change that reviewed snapshot. Confirmation
+and execution remain separate trusted human HTTP actions; chat cannot invoke them.
+Draft creation is currently a backend service/test setup step, not an HTTP endpoint
+or automatic creation. Drafts are not automatically discarded/reset on submission
+or confirmation. Streaming and automatic tool-trace persistence remain outside the
+milestone's verified scope. See [DATABASE.md](DATABASE.md#conversation-history).
 
 ## Verification status
 
@@ -266,33 +305,38 @@ mocked LLM protocol handling, and safe proposal execution. Tests do not make liv
 provider calls; PostgreSQL cases use disposable schemas and skip explicitly when
 `TEST_DATABASE_URL` is absent.
 
-Recorded runs include a 453-test PostgreSQL-enabled full suite at the HTTP decision
-stage, 167 targeted agent/chat/execution/tool tests after the final Milestone 5
-prompt clarification, and 123 targeted PostgreSQL tests for conversation storage
-at commit `ad650e5`. These are historical results at their respective snapshots,
-not a claim that the full suite was rerun at the current head.
+The 2026-10-31 closure audit reran all 772 tests at application commit `bd7f032`:
+772 passed in 85.87s, with no skips or warnings. The suite covers migrations through
+`0008`, model/schema agreement, owner isolation, concurrent locks/versions, durable
+HTTP retries, rollback/commit failures, bounded memory, draft operations and HITL.
+Only disposable PostgreSQL schemas and mocked providers were used in this run.
 
-The `0005` storage update passed 33 conversation/migration tests and 104 related
-persistence/proposal/execution tests (137 total, no skips). These runs used
-disposable PostgreSQL schemas; checks include metadata/model agreement, legacy
-data preservation, JSONB round-tripping, and downgrade refusal when metadata exists.
-The demo schema was not migrated, and no provider requests were made.
+Previously authorized synthetic live checks verified history/progress/logging and
+multi-turn draft append/edit/removal, ambiguity handling and proposal creation.
+An early null-versus-zero extraction error motivated an explicit prompt example;
+the recovered scenario re-tested the same phrase successfully. That historical
+run is not presented as an uninterrupted success or a general fidelity guarantee.
 
-Separately authorized synthetic Groq scenarios verified history retrieval,
-deterministic exercise progress, and HTTP workout proposal creation. The successful
-logging proposal was separately approved and confirmed through HTTP; a fresh
-database read verified the saved workout and ordered exact set values. Confirmation
-made no LLM request. Earlier live extraction failures motivated the existing prompt
-clarifications; successful scenarios do not guarantee arbitrary extraction fidelity.
+The final minimal live E2E used the actual FastAPI app under localhost Uvicorn/TCP
+HTTP, a fresh synthetic schema/owner, and real Groq responses. Four messages
+(append, append, edit, propose) used seven calls: 13,075 prompt + 610 completion =
+13,685 tokens. It verified exact tool arguments, context, UUID/order, draft versions,
+same-key replay without more provider calls, changed-payload 409s, and no workout
+before approval. Separately approved real HTTP confirmation and replay produced
+exactly one workout/two reviewed sets; independent read-only PostgreSQL inspection
+confirmed the values. Confirmation added no Groq calls/tokens. The closure audit
+rechecked that evidence without new provider calls or data writes.
 
-Conversation models/migration are PostgreSQL-tested, but multi-turn chat is neither
-implemented nor live-verified. There is no authentication or full application
-deployment verification. The earlier documentation audit did not rerun application
-tests or live provider calls; the later storage checks are recorded above.
+Completion does not mean production readiness: demo identity is not authentication;
+deployment roles, app containerization, broader security/evaluation/observability,
+planning tools, public draft management and local Ollama live verification remain
+future work. Migrations were tested in isolated schemas; no demo upgrade is implied.
+History character bounds do not cap the whole prompt or current draft; overall
+agent deadlines and production request/draft-size limits remain future hardening.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
-- A write operation (including workout logging/editing) needs explicit user confirmation.
+- AI workout persistence requires a separate explicit human confirmation of the reviewed proposal; draft preparation/edit requests never grant that consent.
 - Start with synthetic fixtures; real personal logs are opt-in and private.
 - This is general training support, not medical advice.
 

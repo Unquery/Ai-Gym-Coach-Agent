@@ -2,10 +2,11 @@
 
 An AI-powered workout logging and progress analysis assistant built as a Junior AI Engineering portfolio project.
 
-**Status:** Milestones 1–5 complete; **Milestone 6 — Conversation Memory &
-Multi-Turn AI Agent** is in progress. Conversation/message models and migrations
-through `0005`, including tool metadata storage, are implemented and PostgreSQL-tested.
-Chat still handles independent requests; it does not save or load conversation history yet.
+**Status:** Milestones 1–6 complete for their verified scope. **Milestone 6 —
+Conversation Memory & Multi-Turn AI Agent** adds transactional chat history,
+bounded context, versioned workout drafts, draft-to-proposal tools and durable
+HTTP idempotency. Migration head is `0008` (11 tables). Production authentication,
+planning tools and complete backend deployment remain future work.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
@@ -25,7 +26,9 @@ and workout persistence commit atomically and retries cannot duplicate workouts.
 
 Automated tests mock LLM responses and use isolated PostgreSQL schemas. Separately
 authorized synthetic Groq scenarios verified history, progress, and HTTP logging
-followed by separate human confirmation. These scenario checks do not establish
+and multi-turn draft/proposal flows followed by separate human confirmation.
+The 2026-10-31 closure audit passed all 772 tests with no skips or warnings.
+These scenario checks do not establish
 general model reliability. See [verification status](docs/PROJECT_CONTEXT.md#verification-status)
 for recorded test runs and limits. Compose currently runs PostgreSQL only;
 application deployment and full backend MVP verification remain planned.
@@ -201,15 +204,15 @@ To run only `/health` without a local `.env` file or database configuration, omi
 
 ## Read-only agent tool
 
-`app.tools.get_recent_workouts` reads the server-selected owner's history using
+`app.agent.tools.get_recent_workouts` reads the server-selected owner's history using
 the same query as `GET /workouts`. It accepts `GetRecentWorkoutsInput` from
-`app.tool_schemas`: strict integer `limit` (default 20, range 1-100) and `offset`
+`app.agent.tool_schemas`: strict integer `limit` (default 20, range 1-100) and `offset`
 (default 0, range 0-2147483647). Unknown fields, including `user_id`, are rejected.
 The input model exposes a JSON Schema through `model_json_schema()`.
 
 ```python
-from app.tool_schemas import GetRecentWorkoutsInput
-from app.tools import get_recent_workouts
+from app.agent.tool_schemas import GetRecentWorkoutsInput
+from app.agent.tools import get_recent_workouts
 
 # session and user_id are supplied by trusted server code.
 arguments = GetRecentWorkoutsInput.model_validate({"limit": 3})
@@ -278,7 +281,7 @@ executed by the API or test suite:
 
 ```python
 from app.llm import create_chat_completion, create_llm_client
-from app.llm_config import load_llm_settings
+from app.llm.config import load_llm_settings
 
 settings = load_llm_settings()
 with create_llm_client(settings) as client:
@@ -297,7 +300,7 @@ context manager as above, or explicitly close the client when finished.
 Run the focused mocked tests without LLM credentials, Ollama, or PostgreSQL:
 
 ```powershell
-uv run --locked pytest tests/test_llm.py tests/test_health.py -q
+uv run --locked pytest tests/llm/test_llm.py tests/api/test_health.py -q
 ```
 
 ## Read-only tool-calling workflow
@@ -332,16 +335,17 @@ PostgreSQL-backed owner-isolation case; no live LLM requests run automatically.
 
 ```powershell
 # Include PostgreSQL ownership and tool tests in disposable schemas:
-uv run --env-file .env --locked pytest tests/test_agent.py tests/test_tools.py tests/test_llm.py tests/test_health.py -q
+uv run --env-file .env --locked pytest tests/agent/test_agent.py tests/agent/test_tools.py tests/llm/test_llm.py tests/api/test_health.py -q
 ```
 
 ## Agent workout proposals
 
-`app.agent.run_agent(user_message, *, client, settings, session, user_id)` adds
-`propose_workout_logging` to the two existing read tools, using the same bounded
-loop. `run_read_only_agent` retains its read-only allowlist and text return contract.
-The new entry returns either ordinary answer text or `WorkoutProposalToolResult`
-for human review. The HTTP adapter below calls it without changing its tool allowlist.
+Without an active draft context, `app.agent.run_agent(user_message, *, client,
+settings, session, user_id)` adds `propose_workout_logging` to the two read tools.
+With trusted active-draft context, it instead exposes the draft tools documented
+below. Both use the same bounded loop. `run_read_only_agent` retains its strict
+read-only allowlist and text return contract. `run_agent` returns ordinary text
+or `WorkoutProposalToolResult` for human review; backend-loaded history is optional.
 
 The model supplies only ordered exercise names, reps, and external kg weights
 through `WorkoutLoggingDraft`. Arguments are validated with Pydantic before SQL;
@@ -384,21 +388,24 @@ with Session(engine) as session, session.begin():
 The agent neither commits nor flushes unrelated pending ORM changes. Let failures
 leave the transaction block to roll back; database errors stop with a generic
 `AgentError` and never enter another model request. Only pending proposal storage
-is allowed: no `Workout`/`WorkoutSet` is created or confirmed. The existing
+and preparatory draft changes are allowed: no `Workout`/`WorkoutSet` is created
+or confirmed. The existing
 `decide_workout_proposal` and `execute_confirmed_workout` functions remain separate
 trusted user-action backend operations, now called by the HTTP actions below.
 Authentication remains planned. Pydantic validates structure, not extraction fidelity;
 human review of the actual snapshot is still necessary.
 
 ```powershell
-uv run --env-file .env --locked pytest tests/test_agent.py tests/test_workout_proposals.py tests/test_proposal_store.py tests/test_workout_execution.py -q
+uv run --env-file .env --locked pytest tests/agent/test_agent.py tests/workouts/test_workout_proposals.py tests/workouts/test_proposal_store.py tests/workouts/test_workout_execution.py -q
 ```
 
 ## Agent chat HTTP API
 
-`POST /agent/chat` accepts one required string field, `message`. Leading/trailing
-whitespace is trimmed; the resulting length must be 1–4000 characters. Non-string
-values and all extra fields, including `user_id` and confirmation flags, return
+`POST /agent/chat` accepts required string `message` and optional nullable UUID
+`conversation_id`. Omit the ID to create a new owned conversation; reuse the
+returned ID for subsequent messages. Leading/trailing message whitespace is
+trimmed; length must be 1–4000 characters. Invalid values and extra fields,
+including client-provided history, `user_id` and confirmation flags, return
 422 before an LLM client is created. The server uses the existing synthetic
 demo-user dependency; this remains local demo identity, not authentication.
 
@@ -411,8 +418,8 @@ Request:
 Successful responses use HTTP 200 and a `type` discriminator, also described in
 OpenAPI for clients such as Android:
 
-- `{"type":"answer","message":"..."}` for ordinary text.
-- `{"type":"proposal","proposal":{...}}` for the existing typed proposal result.
+- `{"type":"answer","conversation_id":"<uuid>","message":"..."}` for text.
+- `{"type":"proposal","conversation_id":"<uuid>","proposal":{...}}` for review.
   `proposal.status="awaiting_confirmation"` includes the reviewed sets, mandatory
   confirmation flag, pending proposal UUID and expiration. `needs_clarification`
   includes indexed issues and null ID/expiration; no proposal was stored.
@@ -428,10 +435,26 @@ identity injection. LLM settings are loaded only for validated chat requests;
 `/health` and application import do not require them. The LLM client is closed
 before the transaction commits. An answer/proposal is returned only after commit
 succeeds; any exception rolls back that transaction, including commit-time failure.
-Each request still starts an independent agent conversation. Revisions `0004` and
-`0005` provide conversation/message storage with tool metadata, but chat does not
-read or write it yet.
-Streaming and history/context loading remain separate tasks.
+The owned conversation row stays locked through the turn. Successful requests
+persist the user message and final assistant text (or structured proposal JSON)
+in consecutive positions. Failures roll back the whole turn. The current user
+message is excluded from history; subsequent runs load at most 20 preceding rows
+and select at most five complete text pairs / 20,000 characters. Individual
+messages over 4,000 characters and tool metadata are omitted as whole pairs.
+Historical proposal JSON is context, never current consent or execution state.
+Intermediate tool calls/results stay within the current run; chat does not
+automatically persist them or rebuild a historical tool protocol. Streaming is deferred.
+These character limits bound history, not the complete prompt/current draft size.
+
+Optional UUID header `Idempotency-Key` binds the server-selected owner and endpoint
+to the raw parsed JSON before trimming/defaults. Replaying a completed request
+returns its stored status/body without LLM setup, tool calls or new messages;
+access to the returned conversation is rechecked. A changed payload with the same
+key returns 409 `idempotency_key_reused`; concurrent execution returns 409
+`request_in_progress` with `Retry-After: 1`. A separate short transaction retains
+the binding even if execution fails. Turn/draft/proposal writes and the completed
+response commit together. Retrying a rolled-back attempt may call the LLM again;
+this is not exactly-once provider execution. Different keys identify new requests.
 
 Errors use fixed `{"detail":"..."}` messages without provider bodies, keys, SQL
 or tracebacks: 504 for SDK timeouts; 502 for other provider failures or `AgentError`
@@ -439,6 +462,8 @@ or tracebacks: 504 for SDK timeouts; 502 for other provider failures or `AgentEr
 configuration, provider rate limits or a database error escaping the transaction.
 Provider authentication errors are 502, since they concern server credentials.
 Invalid request bodies retain FastAPI's standard 422 validation response.
+Missing/foreign conversations return 404. Invalid/duplicate idempotency headers
+return 422; retry conflicts use the structured 409 codes above.
 The existing SDK timeout is 30 seconds with no automatic retries. It is a network
 timeout, not an overall deadline for the bounded agent conversation (up to three
 LLM calls). No background worker continues after an HTTP timeout response.
@@ -453,7 +478,7 @@ Automated checks use a mocked HTTP transport for every LLM request, plus disposa
 PostgreSQL schemas for persistence and commit rollback:
 
 ```powershell
-uv run --env-file .env --locked pytest tests/test_agent_chat.py -q
+uv run --env-file .env --locked pytest tests/api/test_agent_chat.py -q
 ```
 
 ## Workout proposal decision HTTP API
@@ -494,12 +519,12 @@ PostgreSQL tests use disposable schemas, including real insert/commit failures
 and concurrent decisions. They never require live LLM calls:
 
 ```powershell
-uv run --env-file .env --locked pytest tests/test_workout_execution.py tests/test_proposal_store.py tests/test_agent_chat.py -q
+uv run --env-file .env --locked pytest tests/workouts/test_workout_execution.py tests/workouts/test_proposal_store.py tests/api/test_agent_chat.py -q
 ```
 
 ## Deterministic exercise progress
 
-`app.progress.analyze_exercise_progress(exercise_id, workouts)` is a pure Python
+`app.workouts.progress.analyze_exercise_progress(exercise_id, workouts)` is a pure Python
 calculation over already loaded `WorkoutDetailRead` records for one user. It
 returns typed `ExerciseWorkoutProgress` rows for sessions containing that
 exercise, ordered by time (compared in UTC), then workout ID, oldest first.
@@ -522,7 +547,7 @@ weighted/unweighted sets contribute only their recorded external load. Absolute
 changes describe the supplied data; no percentage changes or medical conclusions
 are calculated.
 
-`app.tools.get_exercise_progress(arguments, *, session, user_id)` exposes this
+`app.agent.tools.get_exercise_progress(arguments, *, session, user_id)` exposes this
 calculation to the agent. `GetExerciseProgressInput` requires a strict integer
 `exercise_id` in 1-2147483647 and accepts optional timezone-aware `start_at` and
 `end_at` boundaries. When both are supplied, `start_at < end_at` is required.
@@ -552,12 +577,12 @@ inventing exercise IDs or treating zero external load as zero effort.
 Authentication remains deferred; trusted server code must supply the owner.
 
 ```powershell
-uv run --locked pytest tests/test_progress.py -q
+uv run --locked pytest tests/workouts/test_progress.py -q
 ```
 
 ## Workout logging proposals
 
-`app.workout_proposals.propose_workout_logging(user_message, *, client, settings,
+`app.workouts.proposals.propose_workout_logging(user_message, *, client, settings,
 session)` prepares a draft for human review. Calling it explicitly makes one LLM
 request through the existing provider adapter. It is separate from the read-only
 agent loop; no workout-write tool is exposed.
@@ -595,7 +620,7 @@ The agent and HTTP workflows above now connect proposals to separate human
 decisions and workout execution. Tests mock all LLM responses.
 
 ```powershell
-uv run --locked pytest tests/test_workout_proposals.py -q
+uv run --locked pytest tests/workouts/test_workout_proposals.py -q
 ```
 
 ## Proposal confirmation lifecycle
@@ -604,7 +629,7 @@ Alembic revision `0002` adds only `workout_proposals`. Apply migrations with the
 existing `uv run --env-file .env --locked alembic upgrade head` command before
 using the store. No in-memory proposal registry or worker-local state is used.
 
-`app.proposal_store` provides three server-side functions:
+`app.workouts.proposal_store` provides three server-side functions:
 
 - `create_workout_proposal(proposal, *, session, user_id)` revalidates a complete
   `awaiting_confirmation` draft with no issues. It stores a JSONB snapshot of
@@ -643,12 +668,12 @@ These functions are not registered in the LLM tool allowlist. The implemented
 executor to support atomic confirmation and same-action retries.
 
 ```powershell
-uv run --env-file .env --locked pytest tests/test_proposal_store.py tests/test_migrations.py -q
+uv run --env-file .env --locked pytest tests/workouts/test_proposal_store.py tests/db/test_migrations.py -q
 ```
 
 ## Execute a confirmed workout
 
-`app.workout_execution.execute_confirmed_workout(proposal_id, *, session, user_id)`
+`app.workouts.execution.execute_confirmed_workout(proposal_id, *, session, user_id)`
 executes an already-confirmed, owner-scoped snapshot. Trusted server code supplies
 the owner; LLM arguments/text never authorize execution. Pending, rejected,
 expired, foreign-owner, and unknown proposals cannot create workouts. The
@@ -673,7 +698,7 @@ Use a dedicated session and let failures leave the transaction block:
 ```python
 from sqlalchemy.orm import Session
 
-from app.workout_execution import execute_confirmed_workout
+from app.workouts.execution import execute_confirmed_workout
 
 with Session(engine) as session, session.begin():
     saved = execute_confirmed_workout(proposal_id, session=session, user_id=trusted_user_id)
@@ -684,38 +709,74 @@ Workout creation, all set inserts, and the execution link commit together. Any
 failure rolls them all back and permits retry using the existing consent. The
 function returns `WorkoutDetailRead` and never commits or flushes unrelated ORM
 objects. Repeated/concurrent execution returns the same saved workout without
-inserting duplicates or requiring catalog revalidation again. Repeating the
-separate human decision still raises `ProposalClosedError`.
+inserting duplicates or requiring catalog revalidation again. Calling
+`decide_workout_proposal` again directly raises `ProposalClosedError`; the HTTP
+decision handler handles same-action replay without calling that transition again.
 
 This executor is not an LLM tool. The confirm HTTP action above calls it in the
 same transaction as the human decision. Authentication remains planned.
 No live LLM call is needed to execute or test it.
 
 ```powershell
-uv run --env-file .env --locked pytest tests/test_workout_execution.py tests/test_proposal_store.py tests/test_migrations.py -q
+uv run --env-file .env --locked pytest tests/workouts/test_workout_execution.py tests/workouts/test_proposal_store.py tests/db/test_migrations.py -q
 ```
 
 ## Conversation memory (Milestone 6)
 
-`Conversation` and `ConversationMessage` in `app.models` define the storage layer;
-`Message` remains a compatible import alias for `ConversationMessage`.
-Migration `0004` adds the two tables; `0005` extends messages with tool metadata.
-Existing workout/proposal data and conversation text are preserved.
-Conversations store a server-selected owner; messages reference their parent and
-have a positive position unique within that conversation. Relationships load
-messages by position, independently of timestamp ties. PostgreSQL constrains
-roles to `user`/`assistant`/`tool` and rejects blank text. Assistant messages can
-store a nonempty JSONB `tool_calls` array with optional text; tool results require
-text and a nonblank `tool_call_id`. Python `None` for `tool_calls` stores SQL NULL.
-Downgrading below `0005` refuses to discard stored tool metadata.
+`app.conversations.store` provides owner-checked access and parent-row locking for
+ordered messages. `app.conversations.history` selects bounded complete text pairs.
+`ConversationMessage` (`Message` alias) supports tool metadata for explicit service
+callers, but HTTP chat persists only completed user/assistant turns as described above.
+Migrations `0004`–`0008` preserve legacy rows and add draft snapshots, immutable
+append receipts, and durable HTTP request bindings.
 
-The schema is implemented and PostgreSQL-tested; chat persistence, owner-checked
-access operations, safe concurrent appends, bounded context loading, and multi-turn
-LLM integration remain unfinished. Storage can represent tool exchanges, but the
-agent does not save them yet; structured proposal representation remains undecided.
-Conversation text never replaces explicit workout confirmation.
-See [storage details](docs/DATABASE.md#conversation-history)
-and the [remaining milestone work](docs/ROADMAP.md#milestone-6-remaining-work).
+A keyed chat with an existing owned active draft exposes the two read tools plus:
+
+| Tool | Behavior |
+| --- | --- |
+| `append_workout_draft_set` | Add one explicitly requested set; catalog/reps must resolve. Unknown weight stays null; explicitly no additional weight is zero. |
+| `update_workout_draft_set` | Correct one stable set UUID with a nonempty reps/weight patch. Omitted fields stay unchanged; explicit null clears a value. |
+| `remove_workout_draft_set` | Remove one identified UUID, preserving survivor UUIDs and order. |
+| `propose_workout_draft_logging` | No arguments: copy the current saved draft into a validated immutable pending proposal. Empty/incomplete drafts require clarification. |
+
+Conversation, owner, expected version and operation identity come from trusted
+backend context. The model receives the current ordered snapshot, not authority
+to choose another owner or supply a new version. Unknown/ambiguous edit targets
+require clarification. Mutations/proposals must stand alone; one successful
+mutation is allowed per request (matching append retries reuse the same receipt).
+After clarification/conflict/unavailability, further draft writes in that run
+are blocked. No automatic retry against a newer version is allowed.
+
+Draft creation is currently a backend-service operation, not an HTTP endpoint or
+an automatic chat side effect. For an existing owned conversation, trusted code
+can initialize it explicitly with its configured engine/identity:
+
+```python
+from sqlalchemy.orm import Session
+from app.workouts.drafts import create_workout_draft
+
+with Session(engine) as session, session.begin():
+    draft = create_workout_draft(
+        conversation_id, session=session, user_id=trusted_user_id,
+    )
+```
+
+Unkeyed chats, absent drafts and discarded drafts keep the ordinary proposal
+workflow. Draft edits never change a previously reviewed proposal. Submission
+and confirmation do not automatically discard/reset the draft; different new
+requests can create separate proposals. Only the separate human HTTP confirmation
+action writes a workout; proposal-ID replay protection prevents duplicate execution.
+See [storage details](docs/DATABASE.md#conversation-history) and the
+[completion checklist](docs/ROADMAP.md#milestone-6-completion-checklist).
+
+The recorded synthetic TCP/Groq E2E used four messages (append, append, edit,
+propose), seven provider calls and 13,685 tokens (13,075 prompt + 610 completion).
+No workout existed before separately approved HTTP confirmation. Replay returned
+the same saved workout and ordered sets. This is scenario evidence, not a
+guarantee of extraction fidelity; authentication, production request/draft-size
+limits and a public draft-management API
+remain outside this milestone. Tests make no paid requests; live runs require
+explicit approval and synthetic data, with separate approval before confirmation.
 
 ## Test
 
@@ -752,22 +813,13 @@ uv run --locked pytest
 ## Layout
 
 ```text
-app/main.py           FastAPI routes and demo owner dependency
-app/database.py       PostgreSQL engine, request sessions, and declarative base
-app/models.py         Workout/catalog, proposal, conversation, and message models
-app/schemas.py        Public HTTP request and response schemas
-app/agent_schemas.py  Typed chat request and tagged answer/proposal responses
-app/queries.py        Owner-scoped workout history and exercise-progress reads
-app/tool_schemas.py   Validated agent-tool arguments
-app/tools.py          Typed history/progress tools and pending proposal creation
-app/tool_dispatch.py  Separate read-only and proposal-capable allowlists
-app/agent.py          Bounded tool-calling workflow with server-selected ownership
-app/workout_proposals.py Catalog resolution and standalone LLM draft extraction
-app/proposal_store.py Immutable proposal snapshots and human consent lifecycle
-app/workout_execution.py Atomic/idempotent confirmed workout persistence
-app/progress.py       Pure exercise-session metrics and absolute changes
-app/llm_config.py     Validated LLM environment settings and masked key
-app/llm.py            Configurable OpenAI SDK client and one completion call
+app/main.py           Supported FastAPI entry point (app.main:app)
+app/api/              HTTP routes, chat schemas and durable request idempotency
+app/agent/            Bounded loop, tool schemas, implementations and allowlists
+app/conversations/    Owner-scoped storage and bounded text-history selection
+app/workouts/         Workout schemas/queries, drafts, proposals, execution, metrics
+app/db/               Engine/sessions, all models and synthetic seed implementation
+app/llm/              Provider settings and OpenAI-compatible client helpers
 app/seed.py           Explicit synthetic demo seed
 migrations/           Versioned schema changes
 alembic.ini           Migration configuration (no credentials)
