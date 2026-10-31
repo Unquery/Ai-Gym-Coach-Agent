@@ -69,6 +69,7 @@ class WorkoutProposalIssue(BaseModel):
         "ambiguous_exercise",
         "missing_reps",
         "missing_weight",
+        "empty_draft",
     ]
     set_index: int | None = None
 

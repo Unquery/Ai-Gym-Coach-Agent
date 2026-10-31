@@ -16,7 +16,7 @@ from app.workouts.schemas import WorkoutDetailRead, WorkoutRead
 from app.workouts.drafts import (
     PersistentWorkoutDraftSet, StoredWorkoutDraft, WorkoutDraftConflictError, WorkoutDraftExerciseNotFoundError,
     WorkoutDraftInactiveError, WorkoutDraftNotFoundError, append_workout_draft_set,
-    WorkoutDraftSetNotFoundError, get_workout_draft, remove_workout_draft_set,
+    WorkoutDraftSetNotFoundError, get_workout_draft, lock_active_workout_draft, remove_workout_draft_set,
     update_workout_draft_set,
 )
 from app.agent.tool_schemas import (
@@ -162,6 +162,49 @@ def create_workout_logging_proposal(
     return WorkoutProposalToolResult(
         **proposal.model_dump(), proposal_id=stored.id, expires_at=stored.expires_at,
     )
+
+
+def propose_active_workout_draft(
+    *, context: DraftMutationContext, session: Session, user_id: UUID,
+) -> WorkoutProposalToolResult | DraftMutationToolResult:
+    """Freeze a validated saved snapshot as pending consent in the chat transaction."""
+    with session.no_autoflush:
+        try:
+            draft = lock_active_workout_draft(session, context.conversation_id, user_id)
+        except (WorkoutDraftNotFoundError, WorkoutDraftInactiveError):
+            return DraftMutationToolResult(status="draft_unavailable")
+        if draft.version != context.snapshot.version:
+            return DraftMutationToolResult(status="conflict")
+        if not draft.payload.sets:
+            return WorkoutProposalToolResult(
+                status="needs_clarification", sets=[],
+                issues=[WorkoutProposalIssue(code="empty_draft")],
+            )
+        arguments = WorkoutLoggingDraft(sets=[
+            WorkoutSetDraft.model_validate(item.model_dump(include={"exercise_name", "reps", "weight_kg"}))
+            for item in draft.payload.sets
+        ])
+        proposal = resolve_workout_logging(arguments, session=session)
+        exercise_ids = sorted({item.exercise_id for item in proposal.sets if item.exercise_id is not None})
+        catalog = dict(session.execute(
+            select(Exercise.id, Exercise.name).where(Exercise.id.in_(exercise_ids))
+            .order_by(Exercise.id).with_for_update(read=True)
+        ).all())
+        for index, (source, candidate) in enumerate(zip(draft.payload.sets, proposal.sets, strict=True)):
+            if candidate.exercise_id is not None and (
+                catalog.get(candidate.exercise_id) != candidate.catalog_name
+                or (source.exercise_id is not None and source.exercise_id != candidate.exercise_id)
+            ):
+                # A catalog rename/replacement must not silently rebind a saved set.
+                candidate.exercise_id = candidate.catalog_name = candidate.set_number = None
+                proposal.issues.append(WorkoutProposalIssue(code="unknown_exercise", set_index=index))
+        if proposal.issues:
+            proposal.status = "needs_clarification"
+            return WorkoutProposalToolResult(**proposal.model_dump())
+        stored = create_workout_proposal(proposal, session=session, user_id=user_id)
+        return WorkoutProposalToolResult(
+            **proposal.model_dump(), proposal_id=stored.id, expires_at=stored.expires_at,
+        )
 
 
 def get_recent_workouts(

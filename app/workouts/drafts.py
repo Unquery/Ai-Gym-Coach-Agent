@@ -1,4 +1,4 @@
-"""Versioned draft snapshots only; no proposal conversion or workout execution.
+"""Versioned draft snapshots and locks; never execute workout writes.
 
 Call these services with a dedicated Session inside the caller's session.begin()
 block. They never commit or flush unrelated ORM objects. A successful return is
@@ -98,9 +98,10 @@ def _owned_record(
     return record
 
 
-def _lock_active_draft(
+def lock_active_workout_draft(
     session: Session, conversation_id: UUID, user_id: UUID,
 ) -> StoredWorkoutDraft:
+    """Lock the owned parent and active snapshot in the caller's transaction."""
     # Match create/chat lock order before locking the snapshot row.
     owned_id = session.scalar(
         select(Conversation.id)
@@ -235,7 +236,7 @@ def append_workout_draft_set(
     if not isinstance(idempotency_key, UUID):
         raise ValueError("Idempotency key must be a UUID")
     with session.no_autoflush:
-        draft = _lock_active_draft(session, conversation_id, user_id)
+        draft = lock_active_workout_draft(session, conversation_id, user_id)
         receipts = cast(Table, WorkoutDraftAppendRecord.__table__)
         previous = session.scalar(
             select(receipts.c.set_payload).where(
@@ -317,7 +318,7 @@ def _lock_draft_for_set_change(
         raise ValueError("Set ID must be a UUID, not a position")
     if type(expected_version) is not int or expected_version < 1:
         raise ValueError("Expected version must be a positive integer")
-    draft = _lock_active_draft(session, conversation_id, user_id)
+    draft = lock_active_workout_draft(session, conversation_id, user_id)
     # Check before set lookup: replaying a successful removal is a version conflict.
     if draft.version != expected_version:
         raise WorkoutDraftConflictError("Workout draft version conflict")

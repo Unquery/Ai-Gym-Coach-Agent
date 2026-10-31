@@ -9,9 +9,15 @@ from app.workouts.proposals import DRAFT_TOOL_NAME, WorkoutLoggingDraft, Workout
 APPEND_DRAFT_SET_TOOL_NAME = "append_workout_draft_set"
 UPDATE_DRAFT_SET_TOOL_NAME = "update_workout_draft_set"
 REMOVE_DRAFT_SET_TOOL_NAME = "remove_workout_draft_set"
+PROPOSE_DRAFT_TOOL_NAME = "propose_workout_draft_logging"
 DRAFT_MUTATION_TOOL_NAMES = frozenset({
     APPEND_DRAFT_SET_TOOL_NAME, UPDATE_DRAFT_SET_TOOL_NAME, REMOVE_DRAFT_SET_TOOL_NAME,
 })
+DRAFT_WRITE_TOOL_NAMES = DRAFT_MUTATION_TOOL_NAMES | {PROPOSE_DRAFT_TOOL_NAME}
+
+
+class ProposeDraftInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class DraftSetTargetInput(BaseModel):
@@ -123,6 +129,19 @@ def get_agent_tool_schemas(*, draft_enabled: bool = False) -> list[ChatCompletio
                     "the version. This never deletes a confirmed workout or grants consent."
                 ),
                 "parameters": DraftSetTargetInput.model_json_schema(),
+            },
+        }, {
+            "type": "function",
+            "function": {
+                "name": PROPOSE_DRAFT_TOOL_NAME,
+                "description": (
+                    "Prepare the current saved draft for human review, alone, with no arguments. "
+                    "Use only when the user explicitly asks to submit/review the draft for logging. "
+                    "The backend copies the current ordered sets, never model-supplied sets. "
+                    "Incomplete/empty drafts require clarification. Returns an immutable pending "
+                    "proposal only; never confirms or saves a workout."
+                ),
+                "parameters": ProposeDraftInput.model_json_schema(),
             },
         }]
     return [*get_read_only_tool_schemas(), {
