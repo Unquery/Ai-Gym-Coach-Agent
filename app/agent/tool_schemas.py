@@ -1,4 +1,5 @@
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
+from uuid import UUID
 
 from openai.types.chat import ChatCompletionToolUnionParam
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
@@ -6,6 +7,23 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 from app.workouts.proposals import DRAFT_TOOL_NAME, WorkoutLoggingDraft, WorkoutSetDraft
 
 APPEND_DRAFT_SET_TOOL_NAME = "append_workout_draft_set"
+UPDATE_DRAFT_SET_TOOL_NAME = "update_workout_draft_set"
+REMOVE_DRAFT_SET_TOOL_NAME = "remove_workout_draft_set"
+DRAFT_MUTATION_TOOL_NAMES = frozenset({
+    APPEND_DRAFT_SET_TOOL_NAME, UPDATE_DRAFT_SET_TOOL_NAME, REMOVE_DRAFT_SET_TOOL_NAME,
+})
+
+
+class DraftSetTargetInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Null means the user's target is missing or ambiguous, never "the last set".
+    set_id: UUID | None
+
+
+class UpdateDraftSetInput(DraftSetTargetInput):
+    # The existing service validates the merged set with PersistentWorkoutDraftSet.
+    changes: dict[Literal["reps", "weight_kg"], object] = Field(min_length=1, max_length=2)
 
 
 class GetRecentWorkoutsInput(BaseModel):
@@ -65,7 +83,7 @@ def get_read_only_tool_schemas() -> list[ChatCompletionToolUnionParam]:
 
 
 def get_agent_tool_schemas(*, draft_enabled: bool = False) -> list[ChatCompletionToolUnionParam]:
-    """Expose reads and either draft append or pending proposal creation."""
+    """Expose reads and either draft mutations or pending proposal creation."""
     if draft_enabled:
         return [*get_read_only_tool_schemas(), {
             "type": "function",
@@ -79,6 +97,32 @@ def get_agent_tool_schemas(*, draft_enabled: bool = False) -> list[ChatCompletio
                     "clarification. Request this tool alone. This never confirms or logs a workout."
                 ),
                 "parameters": WorkoutSetDraft.model_json_schema(),
+            },
+        }, {
+            "type": "function",
+            "function": {
+                "name": UPDATE_DRAFT_SET_TOOL_NAME,
+                "description": (
+                    "Correct one explicitly identified set in the current draft, alone. "
+                    "Copy its set_id from the current draft snapshot; use null if ambiguous. "
+                    "changes contains only explicitly requested reps and/or weight_kg. "
+                    "Omitted fields stay unchanged; null explicitly clears a known value. "
+                    "Never guess a correction or target. The backend supplies the version. "
+                    "This never changes a confirmed workout or grants consent."
+                ),
+                "parameters": UpdateDraftSetInput.model_json_schema(),
+            },
+        }, {
+            "type": "function",
+            "function": {
+                "name": REMOVE_DRAFT_SET_TOOL_NAME,
+                "description": (
+                    "Remove one explicitly identified set from the current draft, alone. "
+                    "Copy its set_id from the current draft snapshot; use null if ambiguous. "
+                    "Never guess which repeated set the user means. The backend supplies "
+                    "the version. This never deletes a confirmed workout or grants consent."
+                ),
+                "parameters": DraftSetTargetInput.model_json_schema(),
             },
         }]
     return [*get_read_only_tool_schemas(), {

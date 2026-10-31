@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
 from app.agent.loop import AgentError, run_agent
-from app.agent.tools import DraftAppendContext
+from app.agent.tools import DraftMutationContext
 from app.api.schemas import (
     AgentAnswerResponse,
     AgentChatRequest,
@@ -132,7 +132,9 @@ def _run_chat_turn(
             pass
         else:
             if draft.state == "active":
-                draft_context = DraftAppendContext(conversation_id=conversation_id, request_id=request_id)
+                draft_context = DraftMutationContext(
+                    conversation_id=conversation_id, request_id=request_id, snapshot=draft,
+                )
     with create_llm_client(settings) as client:
         result = run_agent(
             payload.message, client=client, settings=settings,

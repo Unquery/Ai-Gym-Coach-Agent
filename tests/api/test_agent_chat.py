@@ -17,7 +17,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.schemas import AgentAnswerResponse, AgentProposalResponse
-from app.agent.tool_schemas import APPEND_DRAFT_SET_TOOL_NAME
+from app.agent.dispatch import execute_agent_tool, execute_read_only_tool
+from app.agent.tool_schemas import (
+    APPEND_DRAFT_SET_TOOL_NAME, DRAFT_MUTATION_TOOL_NAMES,
+    REMOVE_DRAFT_SET_TOOL_NAME, UPDATE_DRAFT_SET_TOOL_NAME,
+)
+from app.agent.tools import DraftMutationContext, DraftMutationToolResult
 from app.conversations.store import (
     append_message, create_conversation, get_conversation_messages, get_recent_conversation_history,
 )
@@ -29,7 +34,10 @@ from app.db.models import (
     ChatRequestRecord, Conversation, ConversationMessage, Exercise, Workout,
     WorkoutDraftAppendRecord, WorkoutDraftRecord, WorkoutProposalRecord, WorkoutSet,
 )
-from app.workouts.drafts import append_workout_draft_set, create_workout_draft, get_workout_draft
+from app.workouts.drafts import (
+    StoredWorkoutDraft, append_workout_draft_set, create_workout_draft, get_workout_draft,
+    remove_workout_draft_set, update_workout_draft_set,
+)
 from app.workouts.proposal_store import (
     ProposalNotFoundError,
     decide_workout_proposal,
@@ -191,7 +199,7 @@ def test_chat_appends_to_active_draft_and_replays_without_llm(
     assert first.status_code == 200
     assert len(requests) == 3
     tools = {tool["function"]["name"]: tool["function"] for tool in requests[0]["tools"]}
-    assert set(tools) == {"get_recent_workouts", "get_exercise_progress", APPEND_DRAFT_SET_TOOL_NAME}
+    assert set(tools) == {"get_recent_workouts", "get_exercise_progress", *DRAFT_MUTATION_TOOL_NAMES}
     schema = tools[APPEND_DRAFT_SET_TOOL_NAME]["parameters"]
     assert set(schema["properties"]) == {"exercise_name", "reps", "weight_kg"}
     assert schema["additionalProperties"] is False
@@ -288,10 +296,11 @@ def test_draft_append_requests_clarification_or_rejects_untrusted_arguments(
 
 
 @pytest.mark.postgres
+@pytest.mark.parametrize("tool_name", sorted(DRAFT_MUTATION_TOOL_NAMES))
 @pytest.mark.parametrize("unavailable", ["unkeyed", "absent", "discarded"])
-def test_append_tool_requires_durable_request_and_active_draft(
+def test_draft_tools_require_durable_request_and_active_draft(
     postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
-    active_chat_draft: UUID, unavailable: str,
+    active_chat_draft: UUID, unavailable: str, tool_name: str,
 ) -> None:
     (api, requests, responses, _), _, owner = postgres_chat
     conversation_id = active_chat_draft
@@ -301,7 +310,7 @@ def test_append_tool_requires_durable_request_and_active_draft(
         elif unavailable == "discarded":
             session.get(WorkoutDraftRecord, active_chat_draft).state = "discarded"
     responses.extend([
-        completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments={
+        completion_response(tool_name=tool_name, arguments={
             "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
         }),
         completion_response("An active draft and request key are required."),
@@ -311,7 +320,9 @@ def test_append_tool_requires_durable_request_and_active_draft(
         "message": "Add one set.", "conversation_id": str(conversation_id),
     })
     assert response.status_code == 200
-    assert APPEND_DRAFT_SET_TOOL_NAME not in {tool["function"]["name"] for tool in requests[0]["tools"]}
+    assert not DRAFT_MUTATION_TOOL_NAMES.intersection(
+        tool["function"]["name"] for tool in requests[0]["tools"]
+    )
     assert json.loads(requests[-1]["messages"][-1]["content"]) == {"error": {"code": "unknown_tool"}}
     with Session(postgres_engine) as session:
         assert session.scalar(select(func.count()).select_from(WorkoutDraftRecord)) == 1
@@ -353,32 +364,42 @@ def test_append_rolls_back_on_provider_failure_and_retries_with_same_identity(
 
 
 @pytest.mark.postgres
-def test_concurrent_chat_retry_cannot_append_twice(
+@pytest.mark.parametrize("tool_name", sorted(DRAFT_MUTATION_TOOL_NAMES))
+def test_concurrent_chat_retry_cannot_mutate_twice(
     postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
-    active_chat_draft: UUID, monkeypatch: pytest.MonkeyPatch,
+    populated_chat_draft: StoredWorkoutDraft, monkeypatch: pytest.MonkeyPatch, tool_name: str,
 ) -> None:
     (api, requests, responses, _), _, owner = postgres_chat
+    before = populated_chat_draft
     entered, release = Event(), Event()
+    service = {
+        APPEND_DRAFT_SET_TOOL_NAME: append_workout_draft_set,
+        UPDATE_DRAFT_SET_TOOL_NAME: update_workout_draft_set,
+        REMOVE_DRAFT_SET_TOOL_NAME: remove_workout_draft_set,
+    }[tool_name]
 
-    def blocked_append(*args: Any, **kwargs: Any) -> Any:
-        result = append_workout_draft_set(*args, **kwargs)
+    def blocked_mutation(*args: Any, **kwargs: Any) -> Any:
+        result = service(*args, **kwargs)
         entered.set()
         assert release.wait(timeout=10), "Concurrent retry did not finish"
         return result
 
-    monkeypatch.setattr("app.agent.tools.append_workout_draft_set", blocked_append)
+    arguments: dict[str, Any] = {"set_id": str(before.payload.sets[0].id)}
+    if tool_name == UPDATE_DRAFT_SET_TOOL_NAME:
+        arguments["changes"] = {"reps": 8}
+    elif tool_name == APPEND_DRAFT_SET_TOOL_NAME:
+        arguments = {"exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None}
+    monkeypatch.setattr("app.agent.tools." + tool_name, blocked_mutation)
     responses.extend([
-        completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments={
-            "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
-        }),
-        completion_response("Added to the draft."),
+        completion_response(tool_name=tool_name, arguments=arguments),
+        completion_response("Updated the draft."),
     ])
     headers = {"Idempotency-Key": str(uuid4())}
-    body = {"message": "Add one set of 5 reps.", "conversation_id": str(active_chat_draft)}
+    body = {"message": "Update the draft.", "conversation_id": str(before.conversation_id)}
     with ThreadPoolExecutor(max_workers=1) as executor:
         first = executor.submit(api.post, "/agent/chat", headers=headers, json=body)
         try:
-            assert entered.wait(timeout=10), "First request did not append"
+            assert entered.wait(timeout=10), "First request did not mutate"
             concurrent = api.post("/agent/chat", headers=headers, json=body)
             assert concurrent.status_code == 409
             assert concurrent.json()["detail"]["code"] == "request_in_progress"
@@ -389,17 +410,27 @@ def test_concurrent_chat_retry_cannot_append_twice(
     assert api.post("/agent/chat", headers=headers, json=body).json() == completed.json()
     assert len(requests) == 2
     with Session(postgres_engine) as session:
-        draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
-        assert draft.version == 2 and len(draft.payload.sets) == 1
-        assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 1
+        draft = get_workout_draft(before.conversation_id, session=session, user_id=owner)
+        assert draft.version == before.version + 1
+        expected_reps = {
+            APPEND_DRAFT_SET_TOOL_NAME: [5, 7, 5, 5],
+            UPDATE_DRAFT_SET_TOOL_NAME: [8, 7, 5],
+            REMOVE_DRAFT_SET_TOOL_NAME: [7, 5],
+        }[tool_name]
+        assert [item.reps for item in draft.payload.sets] == expected_reps
+        assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == (
+            4 if tool_name == APPEND_DRAFT_SET_TOOL_NAME else 3
+        )
 
 
 @pytest.mark.postgres
-def test_append_in_mixed_tool_batch_is_rejected_before_mutation(
+@pytest.mark.parametrize("tool_name", sorted(DRAFT_MUTATION_TOOL_NAMES))
+def test_draft_mutation_in_mixed_tool_batch_is_rejected_before_mutation(
     postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID], active_chat_draft: UUID,
+    tool_name: str,
 ) -> None:
     (api, requests, responses, _), _, owner = postgres_chat
-    batch = completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments={
+    batch = completion_response(tool_name=tool_name, arguments={
         "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
     }).json()
     batch["choices"][0]["message"]["tool_calls"].append({
@@ -415,6 +446,272 @@ def test_append_in_mixed_tool_batch_is_rejected_before_mutation(
         draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
         assert draft.version == 1 and draft.payload.sets == []
         for model in (WorkoutDraftAppendRecord, Workout, WorkoutSet, WorkoutProposalRecord):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
+
+
+@pytest.fixture
+def populated_chat_draft(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID], active_chat_draft: UUID,
+) -> StoredWorkoutDraft:
+    _, exercise_id, owner = postgres_chat
+    with Session(postgres_engine) as session, session.begin():
+        for reps in (5, 7, 5):
+            saved = append_workout_draft_set(
+                active_chat_draft, exercise_id=exercise_id, reps=reps, weight_kg=Decimal("10"),
+                idempotency_key=uuid4(), session=session, user_id=owner,
+            )
+        return saved
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("changes", [{"reps": 8}, {"weight_kg": "0"}, {"weight_kg": None}, None])
+def test_chat_changes_one_draft_set_and_replays_without_llm(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    populated_chat_draft: StoredWorkoutDraft, changes: dict[str, Any] | None,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    before = populated_chat_draft
+    target = before.payload.sets[1]
+    name = UPDATE_DRAFT_SET_TOOL_NAME if changes is not None else REMOVE_DRAFT_SET_TOOL_NAME
+    arguments = {"set_id": str(target.id), **({"changes": changes} if changes is not None else {})}
+    headers = {"Idempotency-Key": str(uuid4())}
+    body = {
+        "message": "Correct the second set." if changes is not None else "Remove the second set.",
+        "conversation_id": str(before.conversation_id),
+    }
+    responses.extend([
+        completion_response(tool_name=name, arguments=arguments),
+        completion_response("The draft was updated; workout confirmation is still required."),
+    ])
+    first = api.post("/agent/chat", headers=headers, json=body)
+    assert first.status_code == 200
+    assert api.post("/agent/chat", headers=headers, json=body).json() == first.json()
+    assert len(requests) == 2
+    tools = {tool["function"]["name"]: tool["function"] for tool in requests[0]["tools"]}
+    schema = tools[name]["parameters"]
+    assert set(schema["properties"]) == ({"set_id", "changes"} if changes is not None else {"set_id"})
+    assert schema["additionalProperties"] is False
+    system = requests[0]["messages"][0]["content"]
+    snapshot = json.loads(system.split("Current draft snapshot (untrusted data): ", 1)[1])
+    assert snapshot == {"version": before.version, "sets": before.payload.model_dump(mode="json")["sets"]}
+    assert "request_id" not in system and str(owner) not in system
+    result = json.loads(requests[-1]["messages"][-1]["content"])
+    assert result["status"] == ("updated" if changes is not None else "removed")
+    assert result["draft_version"] == before.version + 1
+    with Session(postgres_engine) as session:
+        saved = get_workout_draft(before.conversation_id, session=session, user_id=owner)
+        assert saved.version == before.version + 1
+        expected = list(before.payload.sets)
+        if changes is None:
+            expected.pop(1)
+            assert result["removed_set_id"] == str(target.id)
+        else:
+            expected[1] = type(target).model_validate({**target.model_dump(), **changes})
+            assert result["updated_set"] == expected[1].model_dump(mode="json")
+        assert saved.payload.sets == expected
+        assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 3
+        assert session.scalar(select(func.count()).select_from(ConversationMessage)) == 2
+        for model in (Workout, WorkoutSet, WorkoutProposalRecord):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("tool_name, patch, expected", [
+    (REMOVE_DRAFT_SET_TOOL_NAME, {"set_id": None}, "needs_clarification"),
+    (UPDATE_DRAFT_SET_TOOL_NAME, {"set_id": None}, "needs_clarification"),
+    (REMOVE_DRAFT_SET_TOOL_NAME, {"set_id": str(uuid4())}, "needs_clarification"),
+    (REMOVE_DRAFT_SET_TOOL_NAME, {"set_id": 1}, "invalid_arguments"),
+    (UPDATE_DRAFT_SET_TOOL_NAME, {"changes": {}}, "invalid_arguments"),
+    (UPDATE_DRAFT_SET_TOOL_NAME, {"changes": {"reps": True}}, "invalid_arguments"),
+    (UPDATE_DRAFT_SET_TOOL_NAME, {"changes": {"exercise_id": 1}}, "invalid_arguments"),
+    (UPDATE_DRAFT_SET_TOOL_NAME, {"expected_version": 999}, "invalid_arguments"),
+    (REMOVE_DRAFT_SET_TOOL_NAME, {"user_id": str(uuid4())}, "invalid_arguments"),
+])
+def test_draft_correction_clarifies_targets_and_rejects_invalid_arguments(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    populated_chat_draft: StoredWorkoutDraft, tool_name: str, patch: dict[str, Any], expected: str,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    before = populated_chat_draft
+    arguments: dict[str, Any] = {"set_id": str(before.payload.sets[0].id)}
+    if tool_name == UPDATE_DRAFT_SET_TOOL_NAME:
+        arguments["changes"] = {"reps": 8}
+    arguments.update(patch)
+    responses.extend([
+        completion_response(tool_name=tool_name, arguments=arguments),
+        completion_response("Which set or correction do you mean?"),
+    ])
+    response = api.post("/agent/chat", headers={"Idempotency-Key": str(uuid4())}, json={
+        "message": "Change that pull-up set.", "conversation_id": str(before.conversation_id),
+    })
+    assert response.status_code == 200
+    result = json.loads(requests[-1]["messages"][-1]["content"])
+    if expected == "invalid_arguments":
+        assert result == {"error": {"code": expected}}
+    else:
+        assert result["status"] == expected
+        assert result["target_issue"] == "missing_or_ambiguous_set"
+    with Session(postgres_engine) as session:
+        assert get_workout_draft(before.conversation_id, session=session, user_id=owner) == before
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("tool_name", [UPDATE_DRAFT_SET_TOOL_NAME, REMOVE_DRAFT_SET_TOOL_NAME])
+def test_draft_clarification_cannot_be_followed_by_a_guessed_target(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    populated_chat_draft: StoredWorkoutDraft, tool_name: str,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    before = populated_chat_draft
+    arguments: dict[str, Any] = {"set_id": None}
+    if tool_name == UPDATE_DRAFT_SET_TOOL_NAME:
+        arguments["changes"] = {"reps": 8}
+    responses.extend([
+        completion_response(tool_name=tool_name, call_id="ambiguous", arguments=arguments),
+        completion_response(tool_name=tool_name, call_id="guess", arguments={
+            **arguments, "set_id": str(before.payload.sets[0].id),
+        }),
+        completion_response("Which of the repeated pull-up sets do you mean?"),
+    ])
+    response = api.post("/agent/chat", headers={"Idempotency-Key": str(uuid4())}, json={
+        "message": "Change that pull-up set.", "conversation_id": str(before.conversation_id),
+    })
+    assert response.status_code == 200
+    results = [json.loads(request["messages"][-1]["content"]) for request in requests[1:]]
+    assert [result["status"] for result in results] == ["needs_clarification", "needs_clarification"]
+    with Session(postgres_engine) as session:
+        assert get_workout_draft(before.conversation_id, session=session, user_id=owner) == before
+        assert session.scalar(select(func.count()).select_from(WorkoutProposalRecord)) == 0
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("tool_name", [UPDATE_DRAFT_SET_TOOL_NAME, REMOVE_DRAFT_SET_TOOL_NAME])
+@pytest.mark.parametrize("failure", ["owner", "stale", "discarded"])
+def test_draft_dispatch_reuses_service_ownership_state_and_version_checks(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    populated_chat_draft: StoredWorkoutDraft, tool_name: str, failure: str,
+) -> None:
+    _, _, owner = postgres_chat
+    before = populated_chat_draft
+    target = before.payload.sets[0]
+    context = DraftMutationContext(
+        conversation_id=before.conversation_id, request_id=uuid4(), snapshot=before,
+    )
+    with Session(postgres_engine) as session, session.begin():
+        if failure == "stale":
+            update_workout_draft_set(
+                before.conversation_id, target.id, {"reps": 9}, expected_version=before.version,
+                session=session, user_id=owner,
+            )
+        elif failure == "discarded":
+            record = session.get(WorkoutDraftRecord, before.conversation_id)
+            assert record is not None
+            record.state = "discarded"
+    arguments: dict[str, Any] = {"set_id": str(target.id)}
+    if tool_name == UPDATE_DRAFT_SET_TOOL_NAME:
+        arguments["changes"] = {"reps": 8}
+    with Session(postgres_engine) as session, session.begin():
+        current = get_workout_draft(before.conversation_id, session=session, user_id=owner)
+        with pytest.raises(ValueError, match="Unknown read-only tool"):
+            execute_read_only_tool(tool_name, json.dumps(arguments), session=session, user_id=owner)
+        result = execute_agent_tool(
+            tool_name, json.dumps(arguments), session=session,
+            user_id=uuid4() if failure == "owner" else owner, draft_context=context,
+        )
+        assert isinstance(result, DraftMutationToolResult)
+        assert result.status == ("conflict" if failure == "stale" else "draft_unavailable")
+        assert get_workout_draft(before.conversation_id, session=session, user_id=owner) == current
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("second_tool", sorted(DRAFT_MUTATION_TOOL_NAMES))
+def test_successful_edit_cannot_be_followed_by_another_mutation(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    populated_chat_draft: StoredWorkoutDraft, second_tool: str,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    before = populated_chat_draft
+    first_arguments = {"set_id": str(before.payload.sets[0].id), "changes": {"reps": 8}}
+    second_arguments = {
+        APPEND_DRAFT_SET_TOOL_NAME: {"exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None},
+        UPDATE_DRAFT_SET_TOOL_NAME: first_arguments,
+        REMOVE_DRAFT_SET_TOOL_NAME: {"set_id": str(before.payload.sets[1].id)},
+    }[second_tool]
+    responses.extend([
+        completion_response(tool_name=UPDATE_DRAFT_SET_TOOL_NAME, call_id="first", arguments=first_arguments),
+        completion_response(tool_name=second_tool, call_id="second", arguments=second_arguments),
+        completion_response("Only the first requested draft change was applied."),
+    ])
+    response = api.post("/agent/chat", headers={"Idempotency-Key": str(uuid4())}, json={
+        "message": "Correct the first set to 8 reps.", "conversation_id": str(before.conversation_id),
+    })
+    assert response.status_code == 200
+    assert json.loads(requests[-1]["messages"][-1]["content"])["status"] == "conflict"
+    with Session(postgres_engine) as session:
+        saved = get_workout_draft(before.conversation_id, session=session, user_id=owner)
+        assert saved.version == before.version + 1 and len(saved.payload.sets) == 3
+        assert [item.reps for item in saved.payload.sets] == [8, 7, 5]
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("tool_name", [UPDATE_DRAFT_SET_TOOL_NAME, REMOVE_DRAFT_SET_TOOL_NAME])
+@pytest.mark.parametrize("failure", ["provider", "commit"])
+def test_draft_correction_rolls_back_and_keyed_retry_can_complete(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    populated_chat_draft: StoredWorkoutDraft, tool_name: str, failure: str,
+) -> None:
+    (api, requests, responses, _), _, owner = postgres_chat
+    before = populated_chat_draft
+    arguments: dict[str, Any] = {"set_id": str(before.payload.sets[0].id)}
+    if tool_name == UPDATE_DRAFT_SET_TOOL_NAME:
+        arguments["changes"] = {"reps": 8}
+    mutation = completion_response(tool_name=tool_name, arguments=arguments)
+    final = completion_response("Updated the draft; workout still needs confirmation.")
+    if failure == "commit":
+        # Fail only after the mutation, turn and cached response have been built.
+        with postgres_engine.begin() as connection:
+            connection.execute(text("""
+                CREATE FUNCTION reject_draft_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN RAISE EXCEPTION 'synthetic commit failure'; END; $$
+            """))
+            connection.execute(text("""
+                CREATE CONSTRAINT TRIGGER reject_draft_commit
+                AFTER UPDATE ON workout_drafts DEFERRABLE INITIALLY DEFERRED
+                FOR EACH ROW EXECUTE FUNCTION reject_draft_commit()
+            """))
+    responses.extend([
+        mutation, final if failure == "commit" else httpx2.Response(500, json={
+            "error": {"message": "Synthetic failure"},
+        }),
+    ])
+    headers = {"Idempotency-Key": str(uuid4())}
+    body = {"message": "Correct the first set.", "conversation_id": str(before.conversation_id)}
+    failed = api.post("/agent/chat", headers=headers, json=body)
+    assert failed.status_code == (503 if failure == "commit" else 502)
+    with Session(postgres_engine) as session:
+        assert get_workout_draft(before.conversation_id, session=session, user_id=owner) == before
+        assert session.scalar(select(func.count()).select_from(ConversationMessage)) == 0
+        request = session.scalars(select(ChatRequestRecord)).one()
+        assert request.state == "processing"
+        request_id = request.id
+    if failure == "commit":
+        with postgres_engine.begin() as connection:
+            connection.execute(text("DROP TRIGGER reject_draft_commit ON workout_drafts"))
+    responses.extend([mutation, final])
+    success = api.post("/agent/chat", headers=headers, json=body)
+    assert success.status_code == 200
+    assert api.post("/agent/chat", headers=headers, json=body).json() == success.json()
+    assert len(requests) == 4
+    with Session(postgres_engine) as session:
+        saved = get_workout_draft(before.conversation_id, session=session, user_id=owner)
+        assert saved.version == before.version + 1
+        assert [item.reps for item in saved.payload.sets] == (
+            [8, 7, 5] if tool_name == UPDATE_DRAFT_SET_TOOL_NAME else [7, 5]
+        )
+        request = session.scalars(select(ChatRequestRecord)).one()
+        assert request.id == request_id and request.state == "completed"
+        assert session.scalar(select(func.count()).select_from(ConversationMessage)) == 2
+        for model in (Workout, WorkoutSet, WorkoutProposalRecord):
             assert session.scalar(select(func.count()).select_from(model)) == 0
 
 

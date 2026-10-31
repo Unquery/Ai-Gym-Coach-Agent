@@ -14,11 +14,14 @@ from app.workouts.proposal_store import create_workout_proposal
 from app.workouts.queries import get_exercise_workouts, get_workout_history
 from app.workouts.schemas import WorkoutDetailRead, WorkoutRead
 from app.workouts.drafts import (
-    PersistentWorkoutDraftSet, WorkoutDraftConflictError, WorkoutDraftExerciseNotFoundError,
+    PersistentWorkoutDraftSet, StoredWorkoutDraft, WorkoutDraftConflictError, WorkoutDraftExerciseNotFoundError,
     WorkoutDraftInactiveError, WorkoutDraftNotFoundError, append_workout_draft_set,
-    get_workout_draft,
+    WorkoutDraftSetNotFoundError, get_workout_draft, remove_workout_draft_set,
+    update_workout_draft_set,
 )
-from app.agent.tool_schemas import GetExerciseProgressInput, GetRecentWorkoutsInput
+from app.agent.tool_schemas import (
+    DraftSetTargetInput, GetExerciseProgressInput, GetRecentWorkoutsInput, UpdateDraftSetInput,
+)
 from app.workouts.proposals import (
     WorkoutLoggingDraft, WorkoutLoggingProposal, WorkoutProposalIssue, WorkoutSetDraft,
     resolve_workout_logging,
@@ -39,7 +42,7 @@ class WorkoutProposalToolResult(WorkoutLoggingProposal):
 
 
 @dataclass(frozen=True)
-class DraftAppendContext:
+class DraftMutationContext:
     """Trusted backend context, never model-selected tool arguments.
 
     The caller owns the conversation and durable request execution locks, and
@@ -48,36 +51,40 @@ class DraftAppendContext:
 
     conversation_id: UUID
     request_id: UUID
+    snapshot: StoredWorkoutDraft
 
 
-class DraftAppendToolResult(BaseModel):
-    status: Literal["appended", "needs_clarification", "draft_unavailable", "conflict"]
+class DraftMutationToolResult(BaseModel):
+    status: Literal["appended", "updated", "removed", "needs_clarification", "draft_unavailable", "conflict"]
     appended_set: PersistentWorkoutDraftSet | None = None
+    updated_set: PersistentWorkoutDraftSet | None = None
+    removed_set_id: UUID | None = None
+    target_issue: Literal["missing_or_ambiguous_set"] | None = None
     draft_version: int | None = None
     issues: list[WorkoutProposalIssue] = Field(default_factory=list)
 
 
 def append_set_to_active_draft(
-    arguments: WorkoutSetDraft, *, context: DraftAppendContext,
+    arguments: WorkoutSetDraft, *, context: DraftMutationContext,
     session: Session, user_id: UUID,
-) -> DraftAppendToolResult:
+) -> DraftMutationToolResult:
     """One append slot per server request; no model-generated idempotency keys."""
     try:
         draft = get_workout_draft(context.conversation_id, session=session, user_id=user_id)
         if draft.state != "active":
-            return DraftAppendToolResult(status="draft_unavailable")
+            return DraftMutationToolResult(status="draft_unavailable")
         resolved = resolve_workout_logging(WorkoutLoggingDraft(sets=[arguments]), session=session)
         # Drafts can retain unknown weight, but not a guessed exercise or rep count.
         issues = [issue for issue in resolved.issues if issue.code != "missing_weight"]
         if issues:
-            return DraftAppendToolResult(status="needs_clarification", issues=issues)
+            return DraftMutationToolResult(status="needs_clarification", issues=issues)
         candidate = resolved.sets[0]
         with session.no_autoflush:
             name = session.scalar(select(Exercise.name).where(
                 Exercise.id == candidate.exercise_id,
             ).with_for_update(read=True))
         if name is None or name != candidate.catalog_name:
-            return DraftAppendToolResult(status="needs_clarification", issues=[
+            return DraftMutationToolResult(status="needs_clarification", issues=[
                 WorkoutProposalIssue(code="unknown_exercise", set_index=0),
             ])
         assert candidate.exercise_id is not None
@@ -88,18 +95,56 @@ def append_set_to_active_draft(
             session=session, user_id=user_id,
         )
     except (WorkoutDraftNotFoundError, WorkoutDraftInactiveError):
-        return DraftAppendToolResult(status="draft_unavailable")
+        return DraftMutationToolResult(status="draft_unavailable")
     except WorkoutDraftExerciseNotFoundError:
-        return DraftAppendToolResult(status="needs_clarification", issues=[
+        return DraftMutationToolResult(status="needs_clarification", issues=[
             WorkoutProposalIssue(code="unknown_exercise", set_index=0),
         ])
     except WorkoutDraftConflictError:
-        return DraftAppendToolResult(status="conflict")
+        return DraftMutationToolResult(status="conflict")
     # The execution transaction retains the draft lock; no other writer can
     # change its final set between this append and a matching retry in this turn.
-    return DraftAppendToolResult(
+    return DraftMutationToolResult(
         status="appended", appended_set=saved.payload.sets[-1], draft_version=saved.version,
     )
+
+
+def change_set_in_active_draft(
+    arguments: DraftSetTargetInput, *, context: DraftMutationContext,
+    session: Session, user_id: UUID,
+) -> DraftMutationToolResult:
+    """Use the observed snapshot's version; never refresh it to retry a correction."""
+    if arguments.set_id is None or not any(
+        item.id == arguments.set_id for item in context.snapshot.payload.sets
+    ):
+        return DraftMutationToolResult(
+            status="needs_clarification", target_issue="missing_or_ambiguous_set",
+        )
+    try:
+        if isinstance(arguments, UpdateDraftSetInput):
+            saved = update_workout_draft_set(
+                context.conversation_id, arguments.set_id, dict(arguments.changes),
+                expected_version=context.snapshot.version, session=session, user_id=user_id,
+            )
+            return DraftMutationToolResult(
+                status="updated", draft_version=saved.version,
+                updated_set=next(item for item in saved.payload.sets if item.id == arguments.set_id),
+            )
+        saved = remove_workout_draft_set(
+            context.conversation_id, arguments.set_id,
+            expected_version=context.snapshot.version, session=session, user_id=user_id,
+        )
+        return DraftMutationToolResult(
+            status="removed", draft_version=saved.version, removed_set_id=arguments.set_id,
+        )
+    except (WorkoutDraftNotFoundError, WorkoutDraftInactiveError):
+        return DraftMutationToolResult(status="draft_unavailable")
+    except WorkoutDraftSetNotFoundError:
+        return DraftMutationToolResult(
+            status="needs_clarification", target_issue="missing_or_ambiguous_set",
+        )
+    except WorkoutDraftConflictError:
+        return DraftMutationToolResult(status="conflict")
 
 
 def create_workout_logging_proposal(
