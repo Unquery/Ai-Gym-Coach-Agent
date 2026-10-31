@@ -31,6 +31,16 @@ class UpdateDraftSetInput(DraftSetTargetInput):
     # The existing service validates the merged set with PersistentWorkoutDraftSet.
     changes: dict[Literal["reps", "weight_kg"], object] = Field(min_length=1, max_length=2)
 
+    @model_validator(mode="after")
+    def validate_changes(self) -> Self:
+        # Reuse the set's field rules before execution; do not fill omitted patch keys.
+        # The service still revalidates the actual merged snapshot under its lock.
+        WorkoutSetDraft.model_validate({
+            "exercise_name": "Draft set", "reps": self.changes.get("reps"),
+            "weight_kg": self.changes.get("weight_kg"),
+        })
+        return self
+
 
 class GetRecentWorkoutsInput(BaseModel):
     model_config = ConfigDict(extra="forbid")

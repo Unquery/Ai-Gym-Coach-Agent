@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Exercise, Workout, WorkoutPlan, WorkoutSet
 from app.workouts.schemas import WorkoutRead
-from app.agent.dispatch import execute_read_only_tool
+from app.agent.dispatch import InvalidToolArgumentsError, execute_read_only_tool
 from app.agent.tool_schemas import GetExerciseProgressInput, GetRecentWorkoutsInput
 from app.agent.tools import get_exercise_progress, get_recent_workouts
 
@@ -191,7 +191,7 @@ def test_progress_dispatch_rejects_invalid_arguments_before_sql(
     payload: dict[str, object],
 ) -> None:
     reader = Mock(spec=Session)
-    with pytest.raises(ValidationError):
+    with pytest.raises(InvalidToolArgumentsError):
         execute_read_only_tool(
             "get_exercise_progress", json.dumps(payload),
             session=reader, user_id=uuid4(),

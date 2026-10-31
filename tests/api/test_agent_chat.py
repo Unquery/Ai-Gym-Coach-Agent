@@ -330,8 +330,10 @@ def test_draft_tools_require_durable_request_and_active_draft(
 
 
 @pytest.mark.postgres
+@pytest.mark.parametrize("failure", ["provider", "timeout", "invalid_json", "non_object", "malformed", "incomplete", "tool_limit"])
 def test_append_rolls_back_on_provider_failure_and_retries_with_same_identity(
     postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID], active_chat_draft: UUID,
+    failure: str,
 ) -> None:
     (api, requests, responses, _), _, owner = postgres_chat
     headers = {"Idempotency-Key": str(uuid4())}
@@ -339,13 +341,39 @@ def test_append_rolls_back_on_provider_failure_and_retries_with_same_identity(
     append = completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments={
         "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
     })
-    responses.extend([append, httpx2.Response(500, json={"error": {"message": "Synthetic failure"}})])
-    assert api.post("/agent/chat", headers=headers, json=body).status_code == 502
+    if failure == "provider":
+        failed_response = httpx2.Response(500, json={"error": {"message": SENSITIVE_DETAIL}})
+    elif failure == "timeout":
+        failed_response = httpx2.ReadTimeout(SENSITIVE_DETAIL)
+    elif failure == "invalid_json":
+        failed_response = httpx2.Response(200, content=b"{", headers={"content-type": "application/json"})
+    elif failure == "non_object":
+        failed_response = httpx2.Response(200, json="Not a completion")
+    else:
+        reply = completion_response("This must not be accepted as success.").json()
+        choice = reply["choices"][0]
+        if failure == "malformed":
+            choice["message"] = None
+        elif failure == "incomplete":
+            choice["finish_reason"] = "tool_calls"
+        else:
+            choice["finish_reason"] = "tool_calls"
+            choice["message"]["tool_calls"] = [
+                {"id": call_id, "type": "function", "function": {"name": name, "arguments": "{}"}}
+                for call_id, name in (("read_first", "get_recent_workouts"), ("forbidden", "execute_confirmed_workout"))
+            ]
+        failed_response = httpx2.Response(200, json=reply)
+    responses.extend([append, failed_response])
+    failed = api.post("/agent/chat", headers=headers, json=body)
+    assert failed.status_code == (504 if failure == "timeout" else 502)
+    assert SENSITIVE_DETAIL not in failed.text and len(requests) == 2
     with Session(postgres_engine) as session:
         draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
         assert draft.version == 1 and draft.payload.sets == []
         assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 0
         assert session.scalar(select(func.count()).select_from(ConversationMessage)) == 0
+        for model in (Workout, WorkoutSet, WorkoutProposalRecord):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
         request = session.scalars(select(ChatRequestRecord)).one()
         assert request.state == "processing"
         request_id = request.id
@@ -361,6 +389,58 @@ def test_append_rolls_back_on_provider_failure_and_retries_with_same_identity(
         assert draft.version == 2 and len(draft.payload.sets) == 1
         assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 1
         assert session.scalar(select(func.count()).select_from(WorkoutSet)) == 0
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("failure", ["value", "validation", "runtime"])
+def test_unexpected_tool_failure_after_write_rolls_back_without_an_llm_retry(
+    postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID],
+    active_chat_draft: UUID, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    (api, requests, responses, clients), _, owner = postgres_chat
+
+    def broken_append(*args: Any, **kwargs: Any) -> Any:
+        append_workout_draft_set(*args, **kwargs)
+        if failure == "validation":
+            # Simulate corrupt internal output after SQL, not invalid tool input.
+            StoredWorkoutDraft.model_validate({"version": SENSITIVE_DETAIL})
+        raise (ValueError if failure == "value" else RuntimeError)(SENSITIVE_DETAIL)
+
+    responses.extend([
+        completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments={
+            "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
+        }),
+        completion_response("This answer must never be requested after an internal failure."),
+    ])
+    headers = {"Idempotency-Key": str(uuid4())}
+    body = {"message": "Add one set of 5 reps.", "conversation_id": str(active_chat_draft)}
+    with monkeypatch.context() as scope:
+        scope.setattr("app.agent.tools.append_workout_draft_set", broken_append)
+        response = api.post("/agent/chat", headers=headers, json=body)
+    assert response.status_code == 502 and SENSITIVE_DETAIL not in response.text
+    assert len(requests) == 1 and clients[0].is_closed
+    with Session(postgres_engine) as session:
+        draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
+        assert draft.version == 1 and draft.payload.sets == []
+        for model in (WorkoutDraftAppendRecord, ConversationMessage, Workout, WorkoutSet, WorkoutProposalRecord):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
+        assert session.scalars(select(ChatRequestRecord)).one().state == "processing"
+    responses.clear()
+    responses.extend([
+        completion_response(tool_name=APPEND_DRAFT_SET_TOOL_NAME, arguments={
+            "exercise_name": "Synthetic chat pull-up", "reps": 5, "weight_kg": None,
+        }), completion_response("Added to the draft for later review."),
+    ])
+    success = api.post("/agent/chat", headers=headers, json=body)
+    assert success.status_code == 200
+    assert api.post("/agent/chat", headers=headers, json=body).json() == success.json()
+    assert len(requests) == 3
+    with Session(postgres_engine) as session:
+        draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
+        assert draft.version == 2 and len(draft.payload.sets) == 1
+        assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 1
+        for model in (Workout, WorkoutSet, WorkoutProposalRecord):
+            assert session.scalar(select(func.count()).select_from(model)) == 0
 
 
 @pytest.mark.postgres

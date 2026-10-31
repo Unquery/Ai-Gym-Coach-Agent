@@ -110,6 +110,38 @@ def test_agent_returns_text_without_running_a_tool(
     assert len(requests) == 1
 
 
+@pytest.mark.parametrize("problem", ["message", "function", "content", "missing_calls", "stop_with_calls", "refusal"])
+def test_agent_rejects_malformed_provider_data_before_tool_execution(
+    mocked_llm: MockedLLM, monkeypatch: pytest.MonkeyPatch, problem: str,
+) -> None:
+    client, settings, requests, responses = mocked_llm
+    reader = Mock(side_effect=AssertionError("Malformed responses must not execute tools"))
+    monkeypatch.setattr("app.agent.dispatch.get_recent_workouts", reader)
+    body: dict[str, Any] = completion(
+        "Synthetic answer" if problem in {"content", "missing_calls"} else None,
+        calls=None if problem in {"content", "missing_calls"} else [tool_call()],
+    )
+    message = body["choices"][0]["message"]
+    if problem == "message":
+        body["choices"][0]["message"] = None
+    elif problem == "function":
+        message["tool_calls"][0]["function"] = None
+    elif problem == "content":
+        message["content"] = {"unexpected": "object"}
+    elif problem == "missing_calls":
+        body["choices"][0]["finish_reason"] = "tool_calls"
+    elif problem == "refusal":
+        message["refusal"] = "The model refused this request."
+    else:
+        body["choices"][0]["finish_reason"] = "stop"
+    responses.append(body)
+    with pytest.raises(AgentError):
+        run_read_only_agent("Show history", client=client, settings=settings,
+                            session=Mock(spec=Session), user_id=uuid4())
+    reader.assert_not_called()
+    assert len(requests) == 1
+
+
 @pytest.mark.parametrize("has_history", [False, True])
 def test_agent_sends_typed_tool_result_with_matching_call_id(
     mocked_llm: MockedLLM, monkeypatch: pytest.MonkeyPatch, has_history: bool

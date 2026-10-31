@@ -6,6 +6,7 @@ from uuid import UUID
 
 from openai import OpenAI
 from openai.types.chat import (
+    ChatCompletion,
     ChatCompletionMessageFunctionToolCallParam,
     ChatCompletionMessageParam,
 )
@@ -16,7 +17,9 @@ from sqlalchemy.orm import Session
 from app.conversations.history import MAX_HISTORY_ROWS, select_recent_text_turns
 from app.llm.client import create_chat_completion
 from app.llm.config import LLMSettings
-from app.agent.dispatch import execute_agent_tool, execute_read_only_tool
+from app.agent.dispatch import (
+    InvalidToolArgumentsError, UnknownToolError, execute_agent_tool, execute_read_only_tool,
+)
 from app.agent.tool_schemas import (
     APPEND_DRAFT_SET_TOOL_NAME, DRAFT_WRITE_TOOL_NAMES,
     get_agent_tool_schemas, get_read_only_tool_schemas,
@@ -210,17 +213,30 @@ def _run_agent(
     blocked_mutation_result: DraftMutationToolResult | None = None
 
     for turn in range(MAX_LLM_TURNS):
-        completion = create_chat_completion(client, settings, messages, tools=tools)
+        try:
+            completion = create_chat_completion(client, settings, messages, tools=tools)
+            if not isinstance(completion, ChatCompletion):
+                raise AgentError("The model returned an invalid response")
+            # SDK construction is permissive; revalidate nested data before any tool.
+            completion = ChatCompletion.model_validate(completion.model_dump(warnings=False))
+        except (ValidationError, json.JSONDecodeError, UnicodeDecodeError):
+            raise AgentError("The model returned an invalid response") from None
         if not completion.choices:
             raise AgentError("The model returned no response")
         choice = completion.choices[0]
         if choice.finish_reason not in {"stop", "tool_calls"}:
             raise AgentError("The model response was incomplete")
         message = choice.message
+        if message.refusal is not None and message.tool_calls:
+            raise AgentError("The model returned contradictory tool calls")
         if not message.tool_calls:
+            if choice.finish_reason != "stop":
+                raise AgentError("The model response was incomplete")
             if not message.content or not message.content.strip():
                 raise AgentError("The model returned no final answer")
             return message.content
+        if choice.finish_reason != "tool_calls":
+            raise AgentError("Tool calls require a complete tool call response")
 
         if tool_call_count + len(message.tool_calls) > MAX_TOOL_CALLS:
             raise AgentError("The tool call limit was exceeded")
@@ -302,15 +318,19 @@ def _run_agent(
                     if isinstance(result, list)
                     else result.model_dump(mode="json")
                 )
-            except ValidationError:
+            except InvalidToolArgumentsError:
                 content = json.dumps({"error": {"code": "invalid_arguments"}})
-            except ValueError:
+            except UnknownToolError:
                 content = json.dumps({"error": {"code": "unknown_tool"}})
             except SQLAlchemyError:
                 raise AgentError(
                     "Workout data could not be processed" if allow_proposals
                     else "Workout data could not be read"
                 ) from None
+            except Exception:
+                # An internal failure can occur after SQL writes. Stop the turn so
+                # the caller rolls everything back; never ask the model to retry it.
+                raise AgentError("A tool could not be executed") from None
             messages.append(
                 {"role": "tool", "tool_call_id": call["id"], "content": content}
             )
