@@ -1,15 +1,14 @@
 """Small workflow benchmark plus negative controls for the scorer."""
 
-import json
 import os
 from collections.abc import Iterator
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 from sqlalchemy import Engine
 
 from evals.runner import EvaluationResult, Observation, run_scenario, score_scenario, summarize
+from evals.reports import build_report, format_report, write_report
 from evals.scenarios import FIRST_SET, SCENARIOS, Scenario, ToolCall
 
 
@@ -17,15 +16,10 @@ from evals.scenarios import FIRST_SET, SCENARIOS, Scenario, ToolCall
 def evaluation_results() -> Iterator[list[EvaluationResult]]:
     results: list[EvaluationResult] = []
     yield results
-    report = summarize(results, expected_scenarios=len(SCENARIOS))
-    print("\nAgent evaluation: " + json.dumps(report, ensure_ascii=False))
+    report = build_report(results, SCENARIOS)
+    print("\n" + format_report(report))
     if destination := os.environ.get("AGENT_EVAL_REPORT"):
-        path = Path(destination).resolve()
-        local = (Path(__file__).resolve().parents[2] / ".local").resolve()
-        if not path.is_relative_to(local):
-            raise ValueError("AGENT_EVAL_REPORT must be inside the ignored .local directory")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        write_report(report, destination)
 
 
 @pytest.mark.postgres

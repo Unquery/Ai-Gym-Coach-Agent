@@ -21,7 +21,8 @@ from sqlalchemy.schema import CreateSchema, DropSchema
 
 from app.db.session import create_db_engine, postgres_url
 from app.llm.config import LLMSettings, load_llm_settings
-from evals.runner import run_scenario, summarize
+from evals.runner import run_scenario
+from evals.reports import build_report, format_report, report_path, write_report
 from evals.scenarios import SCENARIOS
 
 
@@ -76,7 +77,8 @@ class GroqBudget:
         try:
             usage = response.json().get("usage", {})
             values = [usage.get(key) for key in self.usage]
-            if all(type(value) is int and value >= 0 for value in values):
+            if (all(type(value) is int and value >= 0 for value in values)
+                    and values[2] == values[0] + values[1]):
                 self.usage_responses += 1
                 for key, value in zip(self.usage, values):
                     self.usage[key] += value
@@ -118,6 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--scenario", action="append", choices=[s.name for s in SCENARIOS])
     parser.add_argument("--max-requests", type=int, choices=range(1, 25), default=6)
     parser.add_argument("--max-completion-tokens", type=int, choices=range(64, 1025), default=512)
+    parser.add_argument("--report", default=".local/agent_eval_live.json")
     args = parser.parse_args(argv)
     names = args.scenario or [SCENARIOS[0].name]
     if len(names) != len(set(names)) or len(names) > 3:
@@ -127,6 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"mode": "preview", "scenarios": names, "max_requests": args.max_requests,
                           "max_completion_tokens": args.max_completion_tokens}))
         return 0
+    destination = report_path(args.report)  # Reject unsafe output paths before any paid request.
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
         parser.error("TEST_DATABASE_URL is required; DATABASE_URL is never used")
@@ -139,13 +143,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 results.append(run_scenario(scenario, engine=engine, provider=budget))
             if budget.stop_reason or budget.requests >= budget.max_requests:
                 break
+    except Exception as exc:
+        # Preserve partial metrics without printing credentials or provider error bodies.
+        budget.stop_reason = f"runner_error:{type(exc).__name__}"
     finally:
         budget.close()
-    report = summarize(results, expected_scenarios=len(selected))
-    report.update(mode="live_groq_http", model=budget.settings.model, provider_requests=budget.requests,
-                  token_usage=budget.usage, usage_responses=budget.usage_responses,
-                  stop_reason=budget.stop_reason)
-    print(json.dumps(report, ensure_ascii=False))
+    report = build_report(results, selected, mode="live_groq_http", model=budget.settings.model,
+                          provider_requests=budget.requests, usage=budget.usage,
+                          usage_responses=budget.usage_responses, stop_reason=budget.stop_reason)
+    report["limits"] = {"max_requests": budget.max_requests,
+                        "max_completion_tokens": budget.max_completion_tokens, "max_request_bytes": 32_000}
+    write_report(report, destination)
+    print(format_report(report))
     return 0 if report["complete"] and all(r.task_success for r in results) else 1
 
 

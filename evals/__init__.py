@@ -2,6 +2,13 @@
 
 Run: uv run --env-file .env --locked pytest tests/evals -q -s
 Optional JSON report: set AGENT_EVAL_REPORT to an ignored .local path first.
+Preview live runner: uv run --env-file .env --locked python -m evals.live
+Only --live enables Groq; --scenario selects up to three cases. Default budget:
+six requests, 512 completion tokens/call, 32000 request bytes, zero retries.
+Compare reports: uv run --locked python -m evals.reports .local/before.json .local/after.json
+Comparison requires complete reports with matching mode and scenario fingerprint.
+Live and deterministic scores are separate; safe tool-free questions/refusals are
+accepted only where declared. Prose quality is not judged automatically.
 Add scenarios in evals.scenarios; runner/scorer require no provider requests.
 
 Mocked decisions verify integration and safeguards, not a real model's language
