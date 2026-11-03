@@ -73,9 +73,8 @@ def get_read_only_tool_schemas() -> list[ChatCompletionToolUnionParam]:
             "function": {
                 "name": "get_recent_workouts",
                 "description": (
-                    "Read the current user's recent workouts, newest first. "
-                    "Returns workout IDs, owner IDs, optional plan IDs, and start times; "
-                    "does not include performed sets or progress statistics."
+                    "List the current user's workout metadata, newest first. "
+                    "No performed sets or statistics; use get_exercise_progress for comparisons."
                 ),
                 "parameters": GetRecentWorkoutsInput.model_json_schema(),
             },
@@ -85,12 +84,10 @@ def get_read_only_tool_schemas() -> list[ChatCompletionToolUnionParam]:
             "function": {
                 "name": "get_exercise_progress",
                 "description": (
-                    "Read deterministic statistics for one exercise belonging to the "
-                    "current user's workout history. Returns per-session reps, sets, "
-                    "external weight/volume and absolute changes. Optional timezone-aware "
-                    "start_at is inclusive and end_at is exclusive, filtering workout "
-                    "start times. Missing bounds are unrestricted. Zero external load "
-                    "does not mean zero physical effort."
+                    "Read the current user's deterministic exercise statistics: session sets/reps, "
+                    "external weight/volume and absolute changes. Ask for unknown exercise IDs. "
+                    "Timezone-aware start_at is inclusive, end_at exclusive, on workout start time; "
+                    "missing bounds are unrestricted. Zero external load is not zero effort."
                 ),
                 "parameters": GetExerciseProgressInput.model_json_schema(),
             },
@@ -106,11 +103,10 @@ def get_agent_tool_schemas(*, draft_enabled: bool = False) -> list[ChatCompletio
             "function": {
                 "name": APPEND_DRAFT_SET_TOOL_NAME,
                 "description": (
-                    "Append one explicitly requested performed set to the current active draft. "
-                    "Supply only exercise_name, reps and weight_kg (external kilograms). "
-                    "Use null for unknown reps or weight; zero requires explicit absence "
-                    "of additional weight. Unknown/ambiguous exercise or reps require "
-                    "clarification. Request this tool alone. This never confirms or logs a workout."
+                    "Append one explicitly requested performed set to the active draft, alone. "
+                    "Use exercise_name, reps, weight_kg (external kg). Unknown reps/weight: null; "
+                    "zero needs explicit no extra load. Unclear exercise/reps/set count: clarify. "
+                    "Never confirms or logs a workout."
                 ),
                 "parameters": WorkoutSetDraft.model_json_schema(),
             },
@@ -119,12 +115,10 @@ def get_agent_tool_schemas(*, draft_enabled: bool = False) -> list[ChatCompletio
             "function": {
                 "name": UPDATE_DRAFT_SET_TOOL_NAME,
                 "description": (
-                    "Correct one explicitly identified set in the current draft, alone. "
-                    "Copy its set_id from the current draft snapshot; use null if ambiguous. "
-                    "changes contains only explicitly requested reps and/or weight_kg. "
-                    "Omitted fields stay unchanged; null explicitly clears a known value. "
-                    "Never guess a correction or target. The backend supplies the version. "
-                    "This never changes a confirmed workout or grants consent."
+                    "Edit one explicit draft set, alone. Copy set_id from the current snapshot; "
+                    "null if unclear. In changes send only requested reps/weight_kg: omitted "
+                    "stays unchanged, null explicitly clears. Never guess. Backend selects "
+                    "the version. No confirmed-workout changes or consent."
                 ),
                 "parameters": UpdateDraftSetInput.model_json_schema(),
             },
@@ -133,10 +127,9 @@ def get_agent_tool_schemas(*, draft_enabled: bool = False) -> list[ChatCompletio
             "function": {
                 "name": REMOVE_DRAFT_SET_TOOL_NAME,
                 "description": (
-                    "Remove one explicitly identified set from the current draft, alone. "
-                    "Copy its set_id from the current draft snapshot; use null if ambiguous. "
-                    "Never guess which repeated set the user means. The backend supplies "
-                    "the version. This never deletes a confirmed workout or grants consent."
+                    "Remove one explicit draft set, alone. Copy set_id from the current snapshot; "
+                    "null if unclear, never guess between repeated sets. Backend selects the "
+                    "version. No confirmed-workout deletion or consent."
                 ),
                 "parameters": DraftSetTargetInput.model_json_schema(),
             },
@@ -145,11 +138,10 @@ def get_agent_tool_schemas(*, draft_enabled: bool = False) -> list[ChatCompletio
             "function": {
                 "name": PROPOSE_DRAFT_TOOL_NAME,
                 "description": (
-                    "Prepare the current saved draft for human review, alone, with no arguments. "
-                    "Use only when the user explicitly asks to submit/review the draft for logging. "
-                    "The backend copies the current ordered sets, never model-supplied sets. "
-                    "Incomplete/empty drafts require clarification. Returns an immutable pending "
-                    "proposal only; never confirms or saves a workout."
+                    "Submit the saved draft for review only on explicit user request, alone with {}. "
+                    "Backend copies ordered saved sets; no model-supplied sets. Empty/incomplete "
+                    "drafts require clarification. Creates an immutable pending proposal, "
+                    "never confirmation or a saved workout."
                 ),
                 "parameters": ProposeDraftInput.model_json_schema(),
             },
@@ -159,15 +151,11 @@ def get_agent_tool_schemas(*, draft_enabled: bool = False) -> list[ChatCompletio
         "function": {
             "name": DRAFT_TOOL_NAME,
             "description": (
-                "Propose logging explicitly described performed sets for human review. "
-                "Each sets item has exactly exercise_name, reps, and weight_kg. "
-                "weight_kg is external weight in kilograms; do not rename this field. "
-                "Preserve original exercise names, reps and set order. "
-                "Explicit 'no additional weight' or 'no extra weight' means "
-                "weight_kg=0 for every affected set. Use null for missing/unclear "
-                "reps or weight; never invent zero. The backend "
-                "resolves catalog names and may store a pending proposal only. "
-                "Never confirms or creates a workout. Request this tool alone."
+                "Propose explicitly described performed sets for human review, alone. Each item "
+                "has exactly exercise_name, reps, weight_kg (external kg). Preserve names/reps/order. "
+                "Explicit 'no additional weight'/'no extra weight': weight_kg=0 for affected sets; "
+                "missing/unclear reps or weight: null, never invented zero. Backend resolves "
+                "catalog names and stores only a pending proposal, never confirmation or a workout."
             ),
             "parameters": WorkoutLoggingDraft.model_json_schema(),
         },
