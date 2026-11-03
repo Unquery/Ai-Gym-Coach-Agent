@@ -9,7 +9,7 @@ import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from itertools import zip_longest
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -33,6 +33,9 @@ from app.workouts.drafts import (
     get_workout_draft, replace_workout_draft,
 )
 from evals.scenarios import PROPOSAL_ID, DraftSet, Scenario, ToolCall, Turn
+
+if TYPE_CHECKING:
+    from evals.live import GroqBudget
 
 
 @dataclass(frozen=True)
@@ -79,13 +82,15 @@ def score_scenario(scenario: Scenario, observations: Sequence[Observation]) -> E
             # Extra turns are unexpected; still count their calls and safety failures.
             turn = Turn("", (), "", (), None, (), allow_draft_change=False)
         label = f"turn_{index + 1}"
-        slots += max(len(turn.expected_calls), len(observed.calls))
-        correct += sum(a == b for a, b in zip(turn.expected_calls, observed.calls))
+        tool_free = turn.allow_tool_free_reply and not (observed.calls or observed.blocked or observed.statuses)
+        expected_calls = () if tool_free else turn.expected_calls
+        slots += max(len(expected_calls), len(observed.calls))
+        correct += sum(a == b for a, b in zip(expected_calls, observed.calls))
         blocked += len(observed.blocked)
         for valid, reason in (
-            (observed.calls == turn.expected_calls, "tool_calls"),
-            (observed.blocked == turn.expected_blocked, "blocked_calls"),
-            (observed.statuses == turn.expected_statuses, "tool_statuses"),
+            (tool_free or observed.calls == turn.expected_calls, "tool_calls"),
+            (tool_free or observed.blocked == turn.expected_blocked, "blocked_calls"),
+            (tool_free or observed.statuses == turn.expected_statuses, "tool_statuses"),
             (_sets_match(turn.expected_sets, observed.sets), "ordered_draft"),
             (observed.proposal_states == turn.proposal_states, "proposal_states"),
             (observed.http_status == 200 and observed.response_type == turn.response_type, "http_response"),
@@ -136,7 +141,9 @@ def _sets_match(expected: tuple[DraftSet, ...] | None, actual: tuple[DraftSet, .
     )
 
 
-def run_scenario(scenario: Scenario, *, engine: Engine) -> EvaluationResult:
+def run_scenario(
+    scenario: Scenario, *, engine: Engine, provider: "GroqBudget | None" = None,
+) -> EvaluationResult:
     owner = UUID(int=100)
     with Session(engine) as session, session.begin():
         schema = session.scalar(text("SELECT current_schema()"))
@@ -172,6 +179,8 @@ def run_scenario(scenario: Scenario, *, engine: Engine) -> EvaluationResult:
 
     settings = LLMSettings(base_url="https://provider.invalid/v1", model="synthetic-model",
                            api_key=SecretStr("synthetic-evaluation-key"))
+    if provider is not None:
+        settings = provider.settings
     history: list[dict[str, str]] = []
     observations: list[Observation] = []
     proposal_snapshots: dict[UUID, dict[str, object]] = {}
@@ -197,10 +206,22 @@ def run_scenario(scenario: Scenario, *, engine: Engine) -> EvaluationResult:
                     memory_ok &= messages[1:1 + len(expected_context)] == expected_context
                     if request_count == 0:
                         memory_ok &= len(messages) == 1 + len(expected_context)
-                    response = _completion(turn, request_count)
-                    if request_count < len(turn.mocked_calls):
-                        requested.append(turn.mocked_calls[request_count])
                     request_count += 1
+                    response = (provider.send(request) if provider is not None
+                                else _completion(turn, request_count - 1))
+                    # Trace actual returned decisions in both mock and live modes.
+                    try:
+                        raw_calls = response.json()["choices"][0]["message"].get("tool_calls") or []
+                        for raw in raw_calls:
+                            function = raw["function"]
+                            arguments = function["arguments"]
+                            try:
+                                arguments = json.loads(arguments)
+                            except (TypeError, json.JSONDecodeError):
+                                pass
+                            requested.append(ToolCall(function["name"], arguments))
+                    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                        pass  # The production boundary handles malformed completions.
                     return response
 
                 def mocked_client(config: LLMSettings) -> OpenAI:

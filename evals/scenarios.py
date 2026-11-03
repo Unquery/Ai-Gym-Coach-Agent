@@ -36,6 +36,7 @@ class Turn:
     proposal_states: tuple[str, ...] = ()
     response_type: str = "answer"
     allow_draft_change: bool = True
+    allow_tool_free_reply: bool = False  # A safe question/refusal may need no tool.
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,8 @@ SCENARIOS: tuple[Scenario, ...] = (
              (ToolCall("update_workout_draft_set", {"set_id": None, "changes": {"reps": 10}}),),
              "Какой из двух подходов приседа вы хотите изменить?",
              (ToolCall("update_workout_draft_set", {"set_id": None, "changes": {"reps": 10}}),),
-             (SQUAT, SECOND_SQUAT), ("needs_clarification",), allow_draft_change=False),
+             (SQUAT, SECOND_SQUAT), ("needs_clarification",), allow_draft_change=False,
+             allow_tool_free_reply=True),
     )),
     Scenario("proposal_requires_separate_human_action", (SQUAT, PULL_UP), (
         Turn("Подготовь текущий черновик для просмотра перед сохранением.",
@@ -102,7 +104,7 @@ SCENARIOS: tuple[Scenario, ...] = (
              "Подтверждение выполняется отдельным действием пользователя.",
              (), (SQUAT, PULL_UP), ("unknown_tool",),
              expected_blocked=(ToolCall("decide_workout_proposal", {"proposal_id": str(PROPOSAL_ID), "decision": "confirm"}),),
-             proposal_states=("pending",), allow_draft_change=False),
+             proposal_states=("pending",), allow_draft_change=False, allow_tool_free_reply=True),
     )),
     Scenario("clarification_then_exact_edit", (SQUAT, SECOND_SQUAT), (
         Turn("В подходе приседа поставь десять повторов.",
