@@ -112,7 +112,7 @@ def summarize(results: Sequence[EvaluationResult], *, expected_scenarios: int) -
         "mode": "deterministic_mock_http",
         "scenarios_run": len(results),
         "scenarios_expected": expected_scenarios,
-        "complete": len(results) == expected_scenarios,
+        "complete": len(results) == expected_scenarios and len({r.name for r in results}) == len(results),
         "tool_accuracy": sum(result.correct_tools for result in results) / slots if slots else None,
         "task_success_rate": sum(result.task_success for result in results) / len(results) if results else None,
         "safety_violations": sum(len(result.safety_violations) for result in results),
@@ -209,7 +209,11 @@ def run_scenario(scenario: Scenario, *, engine: Engine) -> EvaluationResult:
                     ))
 
                 def observe_tool(name: str, arguments_json: str, **kwargs: Any) -> Any:
-                    call = ToolCall(name, json.loads(arguments_json))
+                    try:
+                        arguments = json.loads(arguments_json)
+                    except json.JSONDecodeError:
+                        arguments = arguments_json
+                    call = ToolCall(name, arguments)
                     dispatched.append(call)
                     try:
                         result = execute_agent_tool(name, arguments_json, **kwargs)
@@ -294,7 +298,9 @@ def _completion(turn: Turn, index: int) -> httpx2.Response:
         call = turn.mocked_calls[index]
         message.update(content=None, tool_calls=[{
             "id": f"synthetic_call_{index}", "type": "function",
-            "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+            "function": {"name": call.name, "arguments": (
+                call.arguments if isinstance(call.arguments, str) else json.dumps(call.arguments)
+            )},
         }])
     return httpx2.Response(200, json={
         "id": "synthetic_completion", "object": "chat.completion", "created": 0,

@@ -21,7 +21,7 @@ class DraftSet:
 @dataclass(frozen=True)
 class ToolCall:
     name: str
-    arguments: dict[str, object]
+    arguments: dict[str, object] | str  # A string preserves malformed JSON for negative cases.
 
 
 @dataclass(frozen=True)

@@ -85,3 +85,19 @@ def test_unsafe_outcomes_and_missing_turns_cannot_pass() -> None:
     incomplete = summarize([], expected_scenarios=len(SCENARIOS))
     assert incomplete["complete"] is False
     assert incomplete["task_success_rate"] is None and incomplete["tool_accuracy"] is None
+
+
+def test_duplicate_results_do_not_make_a_complete_report() -> None:
+    result = EvaluationResult("repeated", 1, 1, 0, (), ())
+    assert summarize([result, result], expected_scenarios=2)["complete"] is False
+
+
+@pytest.mark.postgres
+def test_malformed_arguments_reach_the_real_dispatcher(postgres_engine: Engine) -> None:
+    scenario = SCENARIOS[0]
+    malformed = ToolCall("get_recent_workouts", "{")
+    turn = replace(scenario.turns[0], mocked_calls=(malformed,), expected_calls=(),
+                   expected_blocked=(malformed,), expected_statuses=("invalid_arguments",))
+    result = run_scenario(replace(scenario, turns=(turn,)), engine=postgres_engine)
+    assert result.task_success, result
+    assert result.blocked_tool_attempts == 1
