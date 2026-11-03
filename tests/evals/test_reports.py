@@ -7,8 +7,8 @@ import json
 import pytest
 
 from evals.reports import build_report, compare_reports, format_report, main, write_report
-from evals.runner import EvaluationResult
-from evals.scenarios import SCENARIOS
+from evals.runner import EvaluationResult, Observation, score_scenario
+from evals.scenarios import SCENARIOS, ToolCall
 
 
 def baseline() -> dict:
@@ -94,3 +94,19 @@ def test_comparison_cli_rejects_nonobject_json(tmp_path) -> None:
     invalid = tmp_path / "invalid.json"
     invalid.write_text("[]", encoding="utf-8")
     assert main([str(invalid), str(invalid)]) == 2
+
+
+def test_failure_diagnostics_redact_untrusted_strings_and_explain_differences() -> None:
+    secret = "synthetic-sensitive-token"
+    scenario = SCENARIOS[0]
+    observed = Observation(
+        (ToolCall("get_recent_workouts", {"limit": 2, secret: secret}), ToolCall(secret, secret)),
+        (), (secret,), None, (secret,), 502, secret, False, False, 0,
+    )
+    result = score_scenario(scenario, [observed])
+    report = build_report([result], [scenario])
+    output = format_report(report)
+    assert secret not in json.dumps(report) and secret not in output
+    assert "FAIL recent_workout_tool" in output and "expected=" in output and "actual=" in output
+    assert "get_recent_workouts" in output and '"limit": 2' in output
+    assert "<redacted>" in output and "<invalid_arguments>" in output

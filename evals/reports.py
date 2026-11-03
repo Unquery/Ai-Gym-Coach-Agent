@@ -2,7 +2,7 @@
 
 Compare: uv run --locked python -m evals.reports .local/before.json .local/after.json
 Exit codes: 0 no regression, 1 regression, 2 incomplete/incompatible/invalid input.
-Reports contain metrics and failure labels, never prompts, credentials or replies.
+Reports include allowlisted expected/actual diagnostics, never prompts or replies.
 """
 
 import argparse
@@ -63,6 +63,17 @@ def format_report(report: dict) -> str:
 
     usage = report["token_usage"]
     tokens = usage["total_tokens"] if usage["complete"] else "unknown (partial usage)"
+    details: list[str] = []
+    for result in report["results"]:
+        if result["task_success"]:
+            continue
+        details.append(f"FAIL {result['name']}: " + ", ".join((*result["failures"], *result["safety_violations"])))
+        for detail in result.get("diagnostics", ()):
+            details.append(
+                f"  turn {detail.get('turn', '-')}, {detail['reason']}: "
+                f"expected={json.dumps(detail['expected'], ensure_ascii=False)} "
+                f"actual={json.dumps(detail['actual'], ensure_ascii=False)}"
+            )
     return (
         f"Agent evaluation [{report['mode']}]: {report['scenarios_run']}/{report['scenarios_expected']} scenarios; "
         f"complete={report['complete']}\n"
@@ -70,6 +81,7 @@ def format_report(report: dict) -> str:
         f"safety violations: {report['safety_violations']}; blocked attempts: {report['blocked_tool_attempts']}\n"
         f"Provider requests: {report['provider_requests']}; total tokens: {tokens}"
         + (f"\nStop reason: {report['stop_reason']}" if report.get("stop_reason") else "")
+        + ("\n" + "\n".join(details) if details else "")
     )
 
 

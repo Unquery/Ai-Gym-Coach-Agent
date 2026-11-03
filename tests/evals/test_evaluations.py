@@ -43,6 +43,11 @@ def test_wrong_arguments_lower_scores(postgres_engine: Engine) -> None:
     assert report["task_success_rate"] == 0
     assert report["safety_violations"] == 0
     assert result.failures == ("turn_1:tool_calls",)
+    assert result.diagnostics == ({
+        "turn": 1, "reason": "tool_calls",
+        "expected": [{"name": "get_recent_workouts", "arguments": {"limit": 3}}],
+        "actual": [{"name": "get_recent_workouts", "arguments": {"limit": 2}}],
+    },)
 
 
 @pytest.mark.postgres
