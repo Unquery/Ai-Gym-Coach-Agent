@@ -69,18 +69,43 @@ def format_report(report: dict) -> str:
         f"Task success: {rate(report['task_success_rate'])}; tool accuracy: {rate(report['tool_accuracy'])}; "
         f"safety violations: {report['safety_violations']}; blocked attempts: {report['blocked_tool_attempts']}\n"
         f"Provider requests: {report['provider_requests']}; total tokens: {tokens}"
+        + (f"\nStop reason: {report['stop_reason']}" if report.get("stop_reason") else "")
     )
 
 
 def compare_reports(baseline: dict, candidate: dict) -> dict:
     for report in (baseline, candidate):
+        if not isinstance(report, dict):
+            raise ValueError("Report must be a JSON object")
         results = report.get("results", [])
+        if not isinstance(results, list) or any(not isinstance(r, dict) for r in results):
+            raise ValueError("Report results must be a list of objects")
         names = [r["name"] for r in results]
+        if any(not isinstance(name, str) for name in names):
+            raise ValueError("Scenario names must be strings")
         if (report.get("schema_version") != 1 or report.get("complete") is not True
                 or not results or len(names) != len(set(names))
                 or len(results) != report.get("scenarios_expected")
                 or len(results) != report.get("scenarios_run")):
             raise ValueError("Comparison requires complete, nonempty version-1 reports with unique scenarios")
+        checked = []
+        for result in results:
+            counts = [result[key] for key in ("correct_tools", "tool_slots", "blocked_tool_attempts")]
+            labels = [result[key] for key in ("failures", "safety_violations")]
+            if (any(type(value) is not int or value < 0 for value in counts)
+                    or counts[0] > counts[1]
+                    or any(not isinstance(items, list | tuple) or any(not isinstance(s, str) for s in items)
+                           for items in labels)):
+                raise ValueError("Invalid per-scenario metrics")
+            parsed = EvaluationResult(result["name"], *counts, tuple(labels[0]), tuple(labels[1]))
+            if type(result["task_success"]) is not bool or result["task_success"] != parsed.task_success:
+                raise ValueError("Task success disagrees with failures/safety violations")
+            checked.append(parsed)
+        recalculated = summarize(checked, expected_scenarios=len(results))
+        if any(report[key] != recalculated[key] for key in (
+            "task_success_rate", "tool_accuracy", "safety_violations", "blocked_tool_attempts",
+        )):
+            raise ValueError("Aggregate metrics disagree with per-scenario results")
     if (baseline["mode"] != candidate["mode"] or baseline["suite_id"] != candidate["suite_id"]
             or {r["name"] for r in baseline["results"]} != {r["name"] for r in candidate["results"]}):
         raise ValueError("Compare runs of the same mode and unchanged scenario suite")

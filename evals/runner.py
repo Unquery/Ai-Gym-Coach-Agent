@@ -304,6 +304,8 @@ def run_scenario(
                                if body["type"] == "proposal" else body["message"])
                     history.extend([{"role": "user", "content": turn.message},
                                     {"role": "assistant", "content": content}])
+                if provider is not None and (provider.stop_reason or response.status_code != 200):
+                    break  # Do not continue a live conversation after an incomplete turn.
     finally:
         app.dependency_overrides.clear()
         app.dependency_overrides.update(previous_overrides)

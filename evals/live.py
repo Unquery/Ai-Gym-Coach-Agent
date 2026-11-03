@@ -155,6 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "max_completion_tokens": budget.max_completion_tokens, "max_request_bytes": 32_000}
     write_report(report, destination)
     print(format_report(report))
+    print(f"Report: {destination}")
     return 0 if report["complete"] and all(r.task_success for r in results) else 1
 
 

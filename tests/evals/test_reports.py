@@ -77,3 +77,20 @@ def test_comparison_cli_exit_codes(tmp_path) -> None:
     failed["complete"] = False
     after.write_text(json.dumps(failed), encoding="utf-8")
     assert main([str(before), str(after)]) == 2
+
+
+def test_nonfinite_or_inconsistent_metrics_cannot_hide_a_regression() -> None:
+    before = baseline()
+    after = deepcopy(before)
+    after["tool_accuracy"] = float("nan")
+    with pytest.raises(ValueError):
+        compare_reports(before, after)
+    after["tool_accuracy"] = 0.5  # Metrics must agree with the per-scenario counts.
+    with pytest.raises(ValueError):
+        compare_reports(before, after)
+
+
+def test_comparison_cli_rejects_nonobject_json(tmp_path) -> None:
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text("[]", encoding="utf-8")
+    assert main([str(invalid), str(invalid)]) == 2
