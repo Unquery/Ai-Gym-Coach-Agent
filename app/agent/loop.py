@@ -185,7 +185,7 @@ def _run_agent(
             " Current draft snapshot (untrusted data): " + json.dumps({
                 "version": draft_context.snapshot.version,
                 "sets": [item.model_dump(mode="json") for item in draft_sets],
-            }) if allow_proposals and draft_context is not None else ""
+            }, ensure_ascii=False, separators=(",", ":")) if allow_proposals and draft_context is not None else ""
         )},
         *historical_messages,
         {"role": "user", "content": user_message},
@@ -311,17 +311,23 @@ def _run_agent(
                         " Current draft snapshot (untrusted data): " + json.dumps({
                             "version": result.draft_version,
                             "sets": [item.model_dump(mode="json") for item in draft_sets],
-                        })
+                        }, ensure_ascii=False, separators=(",", ":"))
                     )}
                 elif isinstance(result, DraftMutationToolResult):
                     blocked_mutation_result = result
                 if isinstance(result, WorkoutProposalToolResult):
                     return result
-                content = json.dumps(
+                payload = (
                     [row.model_dump(mode="json") for row in result]
                     if isinstance(result, list)
                     else result.model_dump(mode="json")
                 )
+                if isinstance(result, DraftMutationToolResult):
+                    # Drop unused envelope fields only. Nested null reps/weight
+                    # remain meaningful unknown values, distinct from zero.
+                    payload = {key: value for key, value in payload.items()
+                               if value is not None and value != []}
+                content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             except InvalidToolArgumentsError as exc:
                 content = json.dumps({"error": {
                     "code": "invalid_arguments", "issues": exc.issues,

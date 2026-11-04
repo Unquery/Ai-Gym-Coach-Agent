@@ -217,6 +217,7 @@ def test_chat_appends_to_active_draft_and_replays_without_llm(
         assert saved.exercise_id == exercise_id and saved.reps == 5
         assert saved.weight_kg == (None if weight is None else Decimal("0"))
         assert result["appended_set"] == saved.model_dump(mode="json")
+        assert set(result) == {"status", "appended_set", "draft_version"}
         request = session.scalars(select(ChatRequestRecord)).one()
         receipt = session.scalars(select(WorkoutDraftAppendRecord)).one()
         assert request.id != key and request.state == "completed"
