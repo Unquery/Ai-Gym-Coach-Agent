@@ -3,6 +3,16 @@
 Run offline: uv run --env-file .env --locked python -m evals
 Writes .local/agent_eval_offline.json; --scenario selects cases, --list lists them,
 --report selects an ignored .local destination, --baseline compares a prior run.
+Full CLI runs automatically compare evals/baseline.json, a reviewed synthetic
+regression input: nine scenarios, 15/15 correct calls, all tasks successful,
+zero safety violations and one blocked confirmation attempt. Subsets compare
+only when --baseline is explicit. Offline token counts are zero by construction,
+not measured model efficiency. Runtime reports remain ignored in .local/.
+When changing scenarios, first review the scenario diff and run the changed
+cases. Then run all cases with --baseline pointing to a compatible reviewed
+report (or accept exit 2 for the old suite), inspect the saved complete report,
+and deliberately update the baseline's fingerprint and expected metrics.
+Never refresh the baseline just to silence a regression; retain negative controls.
 Exit codes: 0 success, 1 failed scenario/regression, 2 config/infrastructure or
 incompatible baseline, 130 interrupted. Requires TEST_DATABASE_URL; no LLM key.
 Regression tests: uv run --env-file .env --locked pytest tests/evals -q -s

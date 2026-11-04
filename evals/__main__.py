@@ -16,6 +16,8 @@ from evals.reports import build_report, compare_reports, format_report, report_p
 from evals.runner import EvaluationResult, run_scenario
 from evals.scenarios import SCENARIOS
 
+BUNDLED_BASELINE = Path(__file__).with_name("baseline.json")
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -23,7 +25,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="Run selected scenarios; default: all")
     parser.add_argument("--list", action="store_true", help="List scenarios without accessing the database")
     parser.add_argument("--report", default=".local/agent_eval_offline.json")
-    parser.add_argument("--baseline", type=Path, help="Compare against a compatible JSON report")
+    parser.add_argument("--baseline", type=Path,
+                        help="Compare a compatible JSON report; full runs default to evals/baseline.json")
     args = parser.parse_args(argv)
     if args.list:
         print("\n".join(s.name for s in SCENARIOS))
@@ -32,9 +35,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if len(names) != len(set(names)):
         parser.error("Select each scenario only once")
     selected = [next(s for s in SCENARIOS if s.name == name) for name in names]
+    baseline_path = args.baseline or (BUNDLED_BASELINE if not args.scenario else None)
     try:
         destination = report_path(args.report)
-        baseline = json.loads(args.baseline.read_text(encoding="utf-8")) if args.baseline else None
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8")) if baseline_path else None
     except (OSError, ValueError) as exc:
         print(f"Invalid report path or baseline ({type(exc).__name__})")
         return 2
@@ -64,7 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Could not save report ({type(exc).__name__})")
         return 130 if exit_code == 130 else 2
     print(f"Report: {destination}")
-    if args.baseline and not stop_reason:
+    if baseline_path and not stop_reason:
         try:
             comparison = compare_reports(baseline, report)
         except (ValueError, KeyError, TypeError) as exc:

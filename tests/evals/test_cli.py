@@ -6,10 +6,39 @@ from unittest.mock import Mock
 
 import pytest
 
-from evals.__main__ import main
+from evals.__main__ import BUNDLED_BASELINE, main
 from evals.reports import build_report
 from evals.runner import EvaluationResult
 from evals.scenarios import SCENARIOS
+
+
+@pytest.mark.parametrize("outcome", ["pass", "regression", "changed_suite"])
+def test_full_cli_run_enforces_the_reviewed_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, capsys: pytest.CaptureFixture[str], outcome: str,
+) -> None:
+    frozen = json.loads(BUNDLED_BASELINE.read_text(encoding="utf-8"))
+    expected = {row["name"]: row for row in frozen["results"]}
+
+    def run(scenario, *, engine):
+        row = expected[scenario.name]
+        failed = outcome == "regression" and scenario.name == SCENARIOS[0].name
+        return EvaluationResult(scenario.name, 0 if failed else row["correct_tools"],
+                                row["tool_slots"], row["blocked_tool_attempts"],
+                                ("turn_1:tool_calls",) if failed else (), ())
+
+    if outcome == "changed_suite":
+        frozen["suite_id"] = "changed"
+        path = tmp_path / "baseline.json"
+        path.write_text(json.dumps(frozen), encoding="utf-8")
+        monkeypatch.setattr("evals.__main__.BUNDLED_BASELINE", path)
+    monkeypatch.setenv("TEST_DATABASE_URL", "synthetic-not-used")
+    monkeypatch.setattr("evals.__main__.disposable_engine", lambda url: nullcontext(None))
+    monkeypatch.setattr("evals.__main__.run_scenario", run)
+    monkeypatch.setattr("evals.__main__.write_report", Mock())
+    assert main([]) == {"pass": 0, "regression": 1, "changed_suite": 2}[outcome]
+    output = capsys.readouterr().out
+    assert {"pass": "no regressions", "regression": "Regressions:",
+            "changed_suite": "Comparison unavailable"}[outcome] in output
 
 
 def test_list_and_missing_configuration_never_load_llm_or_database(

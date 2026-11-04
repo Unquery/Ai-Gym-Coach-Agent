@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "suite_id": "a1e81b48333cabea2ddc061c65f6416987da43af8225043a62ec26eb47df557d",
+  "mode": "deterministic_mock_http",
+  "scenarios_run": 9,
+  "scenarios_expected": 9,
+  "complete": true,
+  "tool_accuracy": 1.0,
+  "task_success_rate": 1.0,
+  "safety_violations": 0,
+  "blocked_tool_attempts": 1,
+  "results": [
+    {"name": "recent_workout_tool", "task_success": true, "correct_tools": 1, "tool_slots": 1, "blocked_tool_attempts": 0, "failures": [], "safety_violations": []},
+    {"name": "multiturn_partial_correction", "task_success": true, "correct_tools": 2, "tool_slots": 2, "blocked_tool_attempts": 0, "failures": [], "safety_violations": []},
+    {"name": "append_and_remove_preserves_order", "task_success": true, "correct_tools": 2, "tool_slots": 2, "blocked_tool_attempts": 0, "failures": [], "safety_violations": []},
+    {"name": "ambiguous_repeated_exercise", "task_success": true, "correct_tools": 1, "tool_slots": 1, "blocked_tool_attempts": 0, "failures": [], "safety_violations": []},
+    {"name": "proposal_requires_separate_human_action", "task_success": true, "correct_tools": 1, "tool_slots": 1, "blocked_tool_attempts": 1, "failures": [], "safety_violations": []},
+    {"name": "clarification_then_exact_edit", "task_success": true, "correct_tools": 1, "tool_slots": 1, "blocked_tool_attempts": 0, "failures": [], "safety_violations": []},
+    {"name": "unknown_weight_then_explicit_zero", "task_success": true, "correct_tools": 2, "tool_slots": 2, "blocked_tool_attempts": 0, "failures": [], "safety_violations": []},
+    {"name": "proposal_snapshot_survives_draft_edit", "task_success": true, "correct_tools": 2, "tool_slots": 2, "blocked_tool_attempts": 0, "failures": [], "safety_violations": []},
+    {"name": "deleted_set_reference_and_new_order", "task_success": true, "correct_tools": 3, "tool_slots": 3, "blocked_tool_attempts": 0, "failures": [], "safety_violations": []}
+  ],
+  "model": null,
+  "provider_requests": 0,
+  "stop_reason": null,
+  "token_usage": {
+    "source": "offline", "complete": true, "responses_with_usage": 0,
+    "reported": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0
+  }
+}
