@@ -175,14 +175,16 @@ def _run_agent(
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": assistant_text},
         ])
+    system_prompt = SYSTEM_PROMPT + (
+        (DRAFT_MUTATION_INSTRUCTIONS if draft_context is not None else PROPOSAL_INSTRUCTIONS)
+        if allow_proposals else ""
+    ) + (HISTORY_INSTRUCTIONS if history else "")
+    draft_sets = list(draft_context.snapshot.payload.sets) if draft_context is not None else []
     messages: list[ChatCompletionMessageParam] = [
-        {"role": "system", "content": SYSTEM_PROMPT + (
-            (DRAFT_MUTATION_INSTRUCTIONS if draft_context is not None else PROPOSAL_INSTRUCTIONS)
-            if allow_proposals else ""
-        ) + (HISTORY_INSTRUCTIONS if history else "") + (
+        {"role": "system", "content": system_prompt + (
             " Current draft snapshot (untrusted data): " + json.dumps({
                 "version": draft_context.snapshot.version,
-                "sets": [item.model_dump(mode="json") for item in draft_context.snapshot.payload.sets],
+                "sets": [item.model_dump(mode="json") for item in draft_sets],
             }) if allow_proposals and draft_context is not None else ""
         )},
         *historical_messages,
@@ -294,6 +296,23 @@ def _run_agent(
                     "appended", "updated", "removed",
                 }:
                     successful_mutation = name
+                    # Refresh only the model's view. Keep trusted request identity
+                    # and observed version immutable for execution/retry guards.
+                    changed_set = result.appended_set or result.updated_set
+                    if changed_set is not None:
+                        if all(item.id != changed_set.id for item in draft_sets):
+                            draft_sets.append(changed_set)
+                        else:
+                            draft_sets = [changed_set if item.id == changed_set.id else item
+                                          for item in draft_sets]
+                    else:
+                        draft_sets = [item for item in draft_sets if item.id != result.removed_set_id]
+                    messages[0] = {"role": "system", "content": system_prompt + (
+                        " Current draft snapshot (untrusted data): " + json.dumps({
+                            "version": result.draft_version,
+                            "sets": [item.model_dump(mode="json") for item in draft_sets],
+                        })
+                    )}
                 elif isinstance(result, DraftMutationToolResult):
                     blocked_mutation_result = result
                 if isinstance(result, WorkoutProposalToolResult):

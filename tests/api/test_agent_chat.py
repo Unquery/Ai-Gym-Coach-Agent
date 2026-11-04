@@ -249,6 +249,11 @@ def test_repeated_model_calls_share_one_server_append_slot(
         draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)
         assert draft.version == 2 and len(draft.payload.sets) == 1
         assert draft.payload.sets[0].reps == 5
+        for request in requests[1:]:
+            snapshot = json.loads(request["messages"][0]["content"].split(
+                "Current draft snapshot (untrusted data): ", 1,
+            )[1])
+            assert snapshot == {"version": draft.version, "sets": draft.payload.model_dump(mode="json")["sets"]}
         assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 1
 
 
@@ -589,6 +594,10 @@ def test_chat_changes_one_draft_set_and_replays_without_llm(
             expected[1] = type(target).model_validate({**target.model_dump(), **changes})
             assert result["updated_set"] == expected[1].model_dump(mode="json")
         assert saved.payload.sets == expected
+        refreshed = json.loads(requests[1]["messages"][0]["content"].split(
+            "Current draft snapshot (untrusted data): ", 1,
+        )[1])
+        assert refreshed == {"version": saved.version, "sets": saved.payload.model_dump(mode="json")["sets"]}
         assert session.scalar(select(func.count()).select_from(WorkoutDraftAppendRecord)) == 3
         assert session.scalar(select(func.count()).select_from(ConversationMessage)) == 2
         for model in (Workout, WorkoutSet, WorkoutProposalRecord):
