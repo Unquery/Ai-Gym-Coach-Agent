@@ -1,6 +1,6 @@
 # Roadmap
 
-**Milestones 1–6 are complete for the verified scope below.** The next work is
+**Milestones 1–7 are complete for the verified scope below.** The next work is
 the remaining backend MVP priorities. This list replaces the
 earlier zero-based phase numbering, which mixed completed work with future scope.
 
@@ -14,6 +14,7 @@ earlier zero-based phase numbering, which mixed completed work with future scope
 | 4 — LLM and read-only agent | Complete | Configurable OpenAI-compatible client, bounded tool-calling loop, `get_recent_workouts`, and deterministic `get_exercise_progress`; mocked LLM/PostgreSQL tests and recorded synthetic Groq history/progress scenarios. |
 | 5 — Confirmed workout logging | Complete | Catalog-validated proposals, PostgreSQL lifecycle, atomic/idempotent workout execution, chat and confirm/reject HTTP routes; mocked-provider PostgreSQL workflow tests and recorded live Groq logging followed by separate human HTTP confirmation. |
 | 6 — Conversation Memory & Multi-Turn AI Agent | Complete | Owner-scoped transactional chat, bounded memory, versioned draft append/edit/remove, saved-draft proposals and durable HTTP retries; migrations `0004`–`0008`. Verified by offline PostgreSQL tests and separately approved real HTTP/Groq scenarios followed by human confirmation. |
+| 7 — Agent Reliability & Evaluation | Complete (offline scope) | Safe provider/tool failures, bounded-history checks, useful argument feedback, refreshed draft state, compact context, sanitized reports/CLI and a reviewed nine-scenario baseline. Mocked-provider/PostgreSQL verification; live-model quality and production observability remain unverified. |
 
 The 2026-10-31 closure audit passed all 772 tests without skips or warnings.
 "Live-verified" refers only to explicitly
@@ -43,12 +44,30 @@ and a public draft-management API are not part of the verified scope.
 No vector database, embeddings, or RAG are included. Migrations `0004`–`0008`
 were verified in isolated schemas; no demo-database upgrade is implied.
 
+## Milestone 7 completion checklist
+
+- [x] Validate provider protocol and reject unsafe/incomplete responses before dispatch.
+- [x] Recover only from known pre-execution tool errors within existing limits; preserve transactional rollback after execution failures.
+- [x] Verify bounded long-conversation context and references; clarify missing context instead of guessing.
+- [x] Validate invalid/incomplete/inconsistent arguments and return bounded, sanitized feedback.
+- [x] Refresh draft context after mutations; preserve stable IDs/order, stale-version protection, idempotency and separate human confirmation.
+- [x] Reduce redundant context without dropping unknown-versus-zero semantics or safety instructions.
+- [x] Provide deterministic scenarios, negative controls, sanitized reports and a reviewed regression baseline with CLI exit codes.
+- [x] Complete focused safety/integrity verification and synchronize milestone documentation.
+
+Closure on 2026-11-04 verified 553 focused regression cases plus two new long-history
+controls, with a 48-test targeted rerun after final fixes. The offline CLI passed
+nine scenarios and matched baseline (15/15
+correct tools, zero safety violations). No full-suite rerun or live provider calls.
+This scope excludes live-model language-quality guarantees, overall agent deadlines,
+production request/draft limits, runtime observability and production readiness.
+
 ## Remaining backend priorities
 
 Workout planning and plan-retrieval tools remain planned despite the existing
 plan tables. Exercise-name lookup for progress and automatic relative-date context
 are not implemented. Authentication, deployment role separation, broader security
-hardening, systematic agent evaluations, and observability remain future work;
+hardening, broader/live-model evaluations, and runtime observability remain future work;
 existing validation, owner filtering, and mocked safety tests already exist.
 
 Docker Compose currently runs PostgreSQL only. Application containerization,

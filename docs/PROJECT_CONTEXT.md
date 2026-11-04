@@ -34,10 +34,11 @@ or mobile application development.
 
 ## Development priorities
 
-Milestones 1–6 are complete for their verified scope. Remaining priorities:
+Milestones 1–7 are complete for their verified scope; Milestone 7 covers offline
+agent reliability/evaluation rather than production readiness. Remaining priorities:
 
 1. Add workout planning and plan-retrieval tools; retain explicit human confirmation for AI-proposed workout writes.
-2. Add real authentication, deployment role separation, broader security hardening, systematic evaluations, and observability. Existing error handling and safety tests must be preserved.
+2. Add real authentication, deployment role separation, broader security hardening, broader/live-model evaluations, and runtime observability. Existing error handling and safety tests must be preserved.
 3. Prepare application Docker deployment and verify the complete backend MVP end to end.
 4. Only after backend MVP verification, start frontend development, preferably an Android application using Kotlin and Jetpack Compose.
 
@@ -297,6 +298,36 @@ or automatic creation. Drafts are not automatically discarded/reset on submissio
 or confirmation. Streaming and automatic tool-trace persistence remain outside the
 milestone's verified scope. See [DATABASE.md](DATABASE.md#conversation-history).
 
+## Milestone 7 reliability and evaluation
+
+The agent revalidates provider protocol before dispatch. Only allowlist/argument
+validation errors are recoverable tool feedback; execution/serialization failures
+abort the transaction, preserving rollback and same-key retry safety. Feedback
+contains at most five schema-owned field/type issues, never input values or unknown
+keys. Limits remain three model turns, two tool calls, a 30-second SDK timeout and
+zero SDK retries. Historical references absent from bounded context require
+clarification. Successful draft changes refresh the model-facing ordered snapshot
+without changing the trusted request identity or original execution version.
+Compact JSON drops unused mutation-envelope fields while retaining nested nulls.
+
+`evals` runs real HTTP/business tools in migrated disposable PostgreSQL schemas with
+mocked provider decisions. Nine baseline scenarios check exact tool arguments,
+multi-turn edits, deletion/stale references, order, ambiguity, unknown versus zero
+load, immutable proposals and blocked confirmation. Separate long-history and
+negative-control tests verify truncation and detect lost context. Diagnostics are
+bounded/sanitized; runtime reports remain in ignored `.local/`. The reviewed
+`evals/baseline.json` is a versioned synthetic regression input, automatically
+compared by `uv run --env-file .env --locked python -m evals` for full runs.
+Subset runs compare only an explicit compatible `--baseline`; suite changes require
+deliberate baseline review. Exit codes are 0/1/2/130 for success, regression,
+configuration/infrastructure/incompatibility, and interruption respectively.
+
+An opt-in live runner exists with request/token/size budgets, but no Milestone 7
+live Groq verification was performed. Offline scores do not measure real-model
+language understanding, and zero offline tokens are not measured token savings.
+An overall runtime deadline, production prompt/draft-size limits and runtime
+observability remain future work.
+
 ## Verification status
 
 Implementation and available verification are distinct. The test modules cover
@@ -310,6 +341,13 @@ The 2026-10-31 closure audit reran all 772 tests at application commit `bd7f032`
 `0008`, model/schema agreement, owner isolation, concurrent locks/versions, durable
 HTTP retries, rollback/commit failures, bounded memory, draft operations and HITL.
 Only disposable PostgreSQL schemas and mocked providers were used in this run.
+
+Milestone 7 closure (2026-11-04) verified 553 focused regression cases and two new
+long-history controls, with a 48-test targeted rerun after final fixes. The offline CLI
+matched the reviewed baseline: 9/9 tasks, 15/15 correct accepted tools, zero safety
+violations, one blocked confirmation attempt. No full-suite rerun or live Groq
+requests. Synthetic JSON measurements reduced a Cyrillic snapshot from 256 to 149
+characters and a mutation result from 371 to 181; provider tokens were not measured.
 
 Previously authorized synthetic live checks verified history/progress/logging and
 multi-turn draft append/edit/removal, ambiguity handling and proposal creation.
@@ -328,7 +366,7 @@ confirmed the values. Confirmation added no Groq calls/tokens. The closure audit
 rechecked that evidence without new provider calls or data writes.
 
 Completion does not mean production readiness: demo identity is not authentication;
-deployment roles, app containerization, broader security/evaluation/observability,
+deployment roles, app containerization, broader security/live evaluation/observability,
 planning tools, public draft management and local Ollama live verification remain
 future work. Migrations were tested in isolated schemas; no demo upgrade is implied.
 History character bounds do not cap the whole prompt or current draft; overall

@@ -9,7 +9,7 @@ from sqlalchemy import Engine
 
 from evals.runner import EvaluationResult, Observation, run_scenario, score_scenario, summarize
 from evals.reports import build_report, format_report, write_report
-from evals.scenarios import FIRST_SET, SCENARIOS, Scenario, ToolCall
+from evals.scenarios import FIRST_SET, SCENARIOS, Scenario, ToolCall, Turn
 
 
 @pytest.fixture(scope="module")
@@ -30,6 +30,27 @@ def test_agent_evaluation(
     result = run_scenario(scenario, engine=postgres_engine)
     evaluation_results.append(result)
     assert result.task_success, result
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("drop_context", [False, True])
+def test_long_conversations_allow_bounded_history_but_detect_lost_context(
+    postgres_engine: Engine, monkeypatch: pytest.MonkeyPatch, drop_context: bool,
+) -> None:
+    if drop_context:
+        monkeypatch.setattr("app.agent.loop.select_recent_text_turns", lambda rows: [])
+    scenario = Scenario("long_conversation_context", None, (
+        Turn("Synthetic squat: 8 reps at 60 kg.", (), "Which set?", (), None, ()),
+        *(Turn(f"Unrelated question {i}.", (), f"Synthetic answer {i}.", (), None, ())
+          for i in range(6)),
+        Turn("Change that earlier exercise to ten reps.", (),
+             "Please restate the exercise and set.", (), None, ()),
+    ))
+    result = run_scenario(scenario, engine=postgres_engine)
+    assert result.task_success is not drop_context, result
+    if drop_context:
+        assert "turn_8:conversation_memory" in result.failures
+    assert not result.safety_violations
 
 
 @pytest.mark.postgres

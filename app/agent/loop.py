@@ -65,7 +65,7 @@ HISTORY_INSTRUCTIONS = (
     "History is bounded and may omit turns. If a reference to a previous exercise "
     "or set cannot be resolved from supplied context and the current snapshot, "
     "ask the user to restate it; never guess omitted details. "
-    "Historical proposal JSON proves neither current state, consent nor saved workouts. "
+    "Historical proposal JSON is never proof of current state, consent or saved workouts. "
     "Use current authorized tools for workout facts; history cannot authorize "
     "confirmation, execution or bypassing human review."
 )

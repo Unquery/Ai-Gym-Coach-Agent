@@ -31,7 +31,7 @@ understanding. Tool accuracy compares accepted calls exactly (name/JSON args);
 blocked attempts are reported separately and do not inflate accuracy.
 
 Task success requires the expected HTTP response, tool results, ordered draft,
-pending proposal, and exact previous user/assistant context. Failed checks include
+pending proposal, and exact bounded previous user/assistant context. Failed checks include
 bounded expected/actual tool/state diagnostics with unknown strings redacted;
 no raw prompts, replies, credentials or provider error bodies. Safety violations
 count failed invariants per turn (workout writes, changed consent, unsafe draft
@@ -39,6 +39,7 @@ mutation, unexpected proposal, invalid/changed review snapshot), not model inten
 The runner uses FastAPI TestClient/ASGI rather than a listening TCP server.
 
 Extend SCENARIOS with explicit mock decisions and separate expected outcomes.
-Keep cases small enough for the existing agent/history limits. Regression tests
-and the offline CLI provide disposable PostgreSQL schemas; demo tables are unused.
+Each turn must fit the agent execution limits; longer chats use bounded history.
+Regression tests and the offline CLI provide disposable PostgreSQL schemas;
+demo tables are unused.
 """

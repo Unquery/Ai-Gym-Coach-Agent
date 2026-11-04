@@ -2,10 +2,11 @@
 
 An AI-powered workout logging and progress analysis assistant built as a Junior AI Engineering portfolio project.
 
-**Status:** Milestones 1–6 complete for their verified scope. **Milestone 6 —
-Conversation Memory & Multi-Turn AI Agent** adds transactional chat history,
-bounded context, versioned workout drafts, draft-to-proposal tools and durable
-HTTP idempotency. Migration head is `0008` (11 tables). Production authentication,
+**Status:** Milestones 1–7 complete for their verified scope. **Milestone 7 —
+Agent Reliability & Evaluation** adds safe provider/tool failure handling,
+bounded-context checks, refreshed draft snapshots, compact tool context, and
+offline evaluation reports with a reviewed regression baseline. Migration head
+remains `0008` (11 tables). Production authentication,
 planning tools and complete backend deployment remain future work.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
@@ -778,6 +779,40 @@ limits and a public draft-management API
 remain outside this milestone. Tests make no paid requests; live runs require
 explicit approval and synthetic data, with separate approval before confirmation.
 
+## Agent reliability and evaluation (Milestone 7)
+
+Provider responses and tool arguments are validated before dispatch. Invalid
+arguments return bounded schema-field/type feedback without raw values; internal
+execution failures abort the transaction rather than inviting unsafe retries.
+Limits remain three model turns, two tool calls and no SDK retries. Historical
+references missing from bounded context require clarification. After a successful
+draft append/edit/removal, subsequent model calls see the updated ordered snapshot;
+the trusted request identity and observed version remain immutable.
+
+Run deterministic HTTP/tool/PostgreSQL evaluations without live provider calls:
+
+```powershell
+uv run --env-file .env --locked python -m evals
+# Optional subset; no automatic full-suite baseline comparison:
+uv run --env-file .env --locked python -m evals --scenario deleted_set_reference_and_new_order
+```
+
+`TEST_DATABASE_URL` is required; only disposable schemas are used. No LLM key is
+loaded. Full runs compare the reviewed synthetic input `evals/baseline.json`:
+9/9 successful scenarios, 15/15 correct accepted tool calls, zero safety violations,
+one blocked confirmation attempt. Reports/diagnostics stay in ignored `.local/`.
+Exit codes: 0 success, 1 failure/regression, 2 configuration/infrastructure or
+incompatible baseline, 130 interrupted. A changed scenario suite requires deliberate
+baseline review; see [evaluation instructions](evals/__init__.py).
+
+The 2026-11-04 closure verified 553 focused regression cases and two new long-history
+controls, with a 48-test targeted rerun after final fixes. The final CLI matched baseline.
+No full-suite rerun or live Groq calls were made. These checks verify scripted
+integration/safety, not real-model interpretation or language quality. Compact JSON
+preserves unknown values and reduces context characters; actual provider-token
+savings have not been measured. Live-model evaluation, an overall agent deadline,
+production prompt/draft limits and observability remain future work.
+
 ## Test
 
 ```powershell
@@ -821,6 +856,7 @@ app/workouts/         Workout schemas/queries, drafts, proposals, execution, met
 app/db/               Engine/sessions, all models and synthetic seed implementation
 app/llm/              Provider settings and OpenAI-compatible client helpers
 app/seed.py           Explicit synthetic demo seed
+evals/                Offline/live opt-in runners, reports and reviewed baseline
 migrations/           Versioned schema changes
 alembic.ini           Migration configuration (no credentials)
 compose.yaml          Local PostgreSQL with persistent volume

@@ -24,6 +24,7 @@ from app.agent.dispatch import InvalidToolArgumentsError, UnknownToolError, exec
 from app.agent.tools import WorkoutProposalToolResult
 from app.api.application import app, get_demo_user_id
 from app.conversations.store import create_conversation
+from app.conversations.history import MAX_HISTORY_ROWS, select_recent_text_turns
 from app.db.models import Exercise, Workout, WorkoutProposalRecord, WorkoutSet
 from app.db.session import Base, get_session
 from app.llm.client import create_llm_client
@@ -212,7 +213,12 @@ def run_scenario(
                 statuses: list[str] = []
                 request_count = 0
                 memory_ok = True
-                expected_context = [*history, {"role": "user", "content": turn.message}]
+                rows = [(index + 1, message["role"], message["content"])
+                        for index, message in enumerate(history)]
+                expected_context = [
+                    {"role": role, "content": content}
+                    for role, content in select_recent_text_turns(rows[-MAX_HISTORY_ROWS:])
+                ] + [{"role": "user", "content": turn.message}]
 
                 def respond(request: httpx2.Request) -> httpx2.Response:
                     nonlocal request_count, memory_ok
