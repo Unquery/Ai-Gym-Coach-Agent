@@ -303,8 +303,12 @@ def _run_agent(
                     if isinstance(result, list)
                     else result.model_dump(mode="json")
                 )
-            except InvalidToolArgumentsError:
-                content = json.dumps({"error": {"code": "invalid_arguments"}})
+            except InvalidToolArgumentsError as exc:
+                content = json.dumps({"error": {
+                    "code": "invalid_arguments", "issues": exc.issues,
+                    "hint": "Follow the tool schema and constraints (start_at < end_at). "
+                    "Ask the user for unknown details; never invent them.",
+                }})
             except UnknownToolError:
                 content = json.dumps({"error": {"code": "unknown_tool"}})
             except SQLAlchemyError:

@@ -285,7 +285,7 @@ def test_draft_append_requests_clarification_or_rejects_untrusted_arguments(
     assert response.status_code == 200
     result = json.loads(requests[-1]["messages"][-1]["content"])
     if expected == "invalid_arguments":
-        assert result == {"error": {"code": expected}}
+        assert result["error"]["code"] == expected and result["error"]["issues"]
     else:
         assert result["status"] == "needs_clarification"
         assert [issue["code"] for issue in result["issues"]] == [expected]
@@ -627,7 +627,7 @@ def test_draft_correction_clarifies_targets_and_rejects_invalid_arguments(
     assert response.status_code == 200
     result = json.loads(requests[-1]["messages"][-1]["content"])
     if expected == "invalid_arguments":
-        assert result == {"error": {"code": expected}}
+        assert result["error"]["code"] == expected and result["error"]["issues"]
     else:
         assert result["status"] == expected
         assert result["target_issue"] == "missing_or_ambiguous_set"
@@ -939,7 +939,7 @@ def test_draft_proposal_rejects_incomplete_changed_or_model_supplied_snapshots(
     })
     assert response.status_code == 200
     if case == "untrusted_sets":
-        assert json.loads(requests[-1]["messages"][-1]["content"]) == {"error": {"code": "invalid_arguments"}}
+        assert json.loads(requests[-1]["messages"][-1]["content"])["error"]["code"] == "invalid_arguments"
     else:
         proposal = response.json()["proposal"]
         assert proposal["status"] == "needs_clarification" and proposal["proposal_id"] is None

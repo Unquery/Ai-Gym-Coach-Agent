@@ -23,6 +23,27 @@ def test_recent_workouts_input_defaults_and_boundaries() -> None:
     assert GetRecentWorkoutsInput(limit=100, offset=2147483647).offset == 2147483647
 
 
+@pytest.mark.parametrize("arguments,expected", [
+    ('{}', [{"field": "exercise_id", "type": "missing"}]),
+    ('{"exercise_id":true}', [{"field": "exercise_id", "type": "int_type"}]),
+    ('{"exercise_id":1,"sensitive-key":"sensitive-value"}',
+     [{"field": "arguments", "type": "extra_forbidden"}]),
+    (json.dumps({f"sensitive-{i}": "sensitive-value" for i in range(20)}), None),
+])
+def test_argument_feedback_is_bounded_and_does_not_echo_untrusted_data(
+    arguments: str, expected: list[dict[str, str]] | None,
+) -> None:
+    session = Mock(spec=Session)
+    with pytest.raises(InvalidToolArgumentsError) as caught:
+        execute_read_only_tool("get_exercise_progress", arguments, session=session, user_id=uuid4())
+    issues = caught.value.issues
+    assert 1 <= len(issues) <= 5
+    if expected is not None:
+        assert issues == expected
+    assert "sensitive" not in json.dumps(issues) + str(caught.value)
+    assert session.mock_calls == []
+
+
 @pytest.mark.parametrize(
     "payload",
     [

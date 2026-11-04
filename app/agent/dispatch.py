@@ -23,12 +23,24 @@ class UnknownToolError(ValueError):
 class InvalidToolArgumentsError(ValueError):
     """Arguments failed validation before tool execution started."""
 
+    def __init__(self, issues: list[dict[str, str]]) -> None:
+        super().__init__("Invalid tool arguments")
+        self.issues = issues
+
 
 def _validate_arguments[Arguments: BaseModel](model: type[Arguments], arguments_json: str) -> Arguments:
     try:
         return model.model_validate_json(arguments_json)
-    except ValidationError:
-        raise InvalidToolArgumentsError("Invalid tool arguments") from None
+    except ValidationError as exc:
+        # Only schema-owned field names and validator codes; never input, custom
+        # exception text, or untrusted extra keys. Bound feedback independently.
+        fields = model.model_fields.keys() | WorkoutSetDraft.model_fields.keys()
+        issues = [{
+            "field": next((part for part in reversed(error["loc"])
+                           if isinstance(part, str) and part in fields), "arguments"),
+            "type": error["type"],
+        } for error in exc.errors(include_input=False, include_context=False, include_url=False)[:5]]
+        raise InvalidToolArgumentsError(issues) from None
 
 
 def execute_read_only_tool(

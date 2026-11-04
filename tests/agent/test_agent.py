@@ -254,7 +254,11 @@ def test_agent_returns_safe_tool_errors_without_database_access(
     assert len(requests) == 2
     result = requests[-1]["messages"][-1]
     assert result["tool_call_id"] == "call_1"
-    assert json.loads(result["content"]) == {"error": {"code": error_code}}
+    error = json.loads(result["content"])["error"]
+    assert error["code"] == error_code
+    if error_code == "invalid_arguments":
+        assert error["issues"] and "never invent" in error["hint"]
+        assert "untrusted-owner" not in result["content"]
 
 
 def test_agent_returns_a_result_for_each_call_in_a_valid_batch(
@@ -345,6 +349,9 @@ def test_agent_can_recover_after_invalid_arguments(
     )
     reader.assert_called_once()
     assert len(requests) == 3
+    assert json.loads(requests[1]["messages"][-1]["content"])["error"]["issues"] == [
+        {"field": "arguments", "type": "json_invalid"},
+    ]
 
 
 @pytest.mark.parametrize("one_batch", [False, True])
@@ -717,9 +724,7 @@ def test_proposal_arguments_are_validated_before_any_database_access(
     ) == "Please clarify the set."
     assert session.mock_calls == []
     assert len(requests) == 2
-    assert json.loads(requests[1]["messages"][-1]["content"]) == {
-        "error": {"code": "invalid_arguments"}
-    }
+    assert json.loads(requests[1]["messages"][-1]["content"])["error"]["code"] == "invalid_arguments"
 
 
 @pytest.mark.parametrize("problem", ["read_batch", "two_proposals", "execution_batch", "stop", "length"])
