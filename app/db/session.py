@@ -8,7 +8,7 @@ from sqlalchemy import Engine, MetaData, create_engine
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import DeclarativeBase, Session
 
-from app.config import load_settings
+from app.config import load_database_settings
 
 
 class Base(DeclarativeBase):
@@ -38,7 +38,7 @@ def postgres_url(value: str | URL) -> URL:
 
 
 def create_db_engine(url: str | URL | None = None) -> Engine:
-    settings = load_settings()
+    settings = load_database_settings()
     target = database_url() if url is None else postgres_url(url)
     return create_engine(
         target,

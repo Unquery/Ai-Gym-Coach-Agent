@@ -9,19 +9,42 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from sqlalchemy.engine import make_url
 
 
-class AppSettings(BaseModel):
+class DatabaseSettings(BaseModel):
     model_config = ConfigDict(frozen=True, hide_input_in_errors=True)
 
+    db_pool_size: int = Field(default=3, ge=1, le=20)
+    db_max_overflow: int = Field(default=2, ge=0, le=20)
+    db_connect_timeout: int = Field(default=5, ge=1, le=30)
+    db_statement_timeout_ms: int = Field(default=15000, ge=1000, le=120000)
+
+
+def load_database_settings() -> DatabaseSettings:
+    return DatabaseSettings.model_validate({
+        name: os.environ[name.upper()]
+        for name in DatabaseSettings.model_fields if name.upper() in os.environ
+    })
+
+
+def validate_production_database_url(value: str) -> None:
+    try:
+        url = make_url(value)
+        if (
+            url.drivername != "postgresql+psycopg" or not url.host or not url.database
+            or not url.username or not url.password
+            or url.query.get("sslmode") not in {"require", "verify-ca", "verify-full"}
+        ):
+            raise ValueError
+    except Exception:
+        raise ValueError("Production database URL requires PostgreSQL credentials and TLS") from None
+
+
+class AppSettings(DatabaseSettings):
     environment: Literal["development", "production"] = "development"
     enable_demo_auth: bool = False
     api_auth_token: SecretStr | None = None
     api_owner_id: UUID | None = None
     allowed_hosts: tuple[str, ...] = ("localhost", "127.0.0.1", "testserver")
     cors_origins: tuple[str, ...] = ()
-    db_pool_size: int = Field(default=3, ge=1, le=20)
-    db_max_overflow: int = Field(default=2, ge=0, le=20)
-    db_connect_timeout: int = Field(default=5, ge=1, le=30)
-    db_statement_timeout_ms: int = Field(default=15000, ge=1000, le=120000)
     max_request_bytes: int = Field(default=16384, ge=4096, le=1048576)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
@@ -68,16 +91,7 @@ def load_settings() -> AppSettings:
     settings = AppSettings.model_validate(values)
     if settings.environment == "production":
         # Errors must never include a connection string or provider credential.
-        try:
-            url = make_url(os.environ.get("DATABASE_URL", ""))
-            if (
-                url.drivername != "postgresql+psycopg" or not url.host or not url.database
-                or not url.username or not url.password
-                or url.query.get("sslmode") not in {"require", "verify-ca", "verify-full"}
-            ):
-                raise ValueError
-        except Exception:
-            raise ValueError("Production DATABASE_URL requires PostgreSQL credentials and TLS") from None
+        validate_production_database_url(os.environ.get("DATABASE_URL", ""))
         provider = urlsplit(os.environ.get("LLM_BASE_URL", "https://api.groq.com/openai/v1"))
         if provider.scheme != "https" or not provider.netloc or provider.username or provider.password:
             raise ValueError("Production LLM_BASE_URL requires HTTPS without embedded credentials")
