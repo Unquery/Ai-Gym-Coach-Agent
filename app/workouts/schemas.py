@@ -22,6 +22,8 @@ class ExerciseRead(BaseModel):
 
 
 class ExerciseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: Annotated[
         str, StringConstraints(min_length=1, max_length=120, strip_whitespace=True)
     ]

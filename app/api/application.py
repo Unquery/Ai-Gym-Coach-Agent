@@ -1,11 +1,14 @@
 """HTTP entry point for AI Gym Coach."""
 
+from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from threading import Lock
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Path, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from openai import APIError, APITimeoutError, RateLimitError
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
@@ -13,9 +16,12 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
+from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.agent.loop import AgentError, run_agent
-from app.config import load_settings
+from app.config import AppSettings, load_settings
+from app.api.security import RequestBodyLimit, get_current_user_id
 from app.agent.tools import DraftMutationContext
 from app.api.schemas import (
     AgentAnswerResponse,
@@ -61,7 +67,6 @@ from app.workouts.schemas import (
     WorkoutSetCreate,
     WorkoutSetRead,
 )
-from app.db.seed import DEMO_USER_ID
 from app.workouts.execution import (
     ProposalCatalogChangedError,
     ProposalNotConfirmedError,
@@ -70,21 +75,13 @@ from app.workouts.execution import (
 from app.workouts.drafts import WorkoutDraftNotFoundError, get_workout_draft
 
 
-@asynccontextmanager
-async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-    application.state.settings = load_settings()
-    yield
+public_routes = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user_id)])
+# Preserve the existing internal dependency-override hook used by offline evals.
+get_demo_user_id = get_current_user_id
 
 
-app = FastAPI(title="AI Gym Coach", lifespan=lifespan)
-
-
-def get_demo_user_id() -> UUID:
-    """Use the synthetic demo owner until authentication is implemented."""
-    return DEMO_USER_ID
-
-
-@app.get("/health")
+@public_routes.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
@@ -167,11 +164,11 @@ def _run_chat_turn(
     return response
 
 
-@app.post("/agent/chat", response_model=AgentChatResponse)
+@router.post("/agent/chat", response_model=AgentChatResponse)
 def agent_chat(
     payload: AgentChatRequest,
     session: Annotated[Session, Depends(get_session)],
-    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    user_id: Annotated[UUID, Depends(get_current_user_id)],
     idempotency: Annotated[tuple[UUID, str] | None, Depends(get_chat_idempotency)],
 ) -> AgentAnswerResponse | AgentProposalResponse | JSONResponse:
     try:
@@ -279,11 +276,11 @@ def _apply_proposal_decision(
     return response
 
 
-@app.post("/workout-proposals/{proposal_id}/confirm", response_model=ProposalActionResponse)
+@router.post("/workout-proposals/{proposal_id}/confirm", response_model=ProposalActionResponse)
 def confirm_workout_proposal(
     proposal_id: UUID,
     session: Annotated[Session, Depends(get_session)],
-    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    user_id: Annotated[UUID, Depends(get_current_user_id)],
     payload: Annotated[ProposalActionRequest, Body()] = ProposalActionRequest(),
 ) -> ProposalActionResponse:
     return _apply_proposal_decision(
@@ -291,11 +288,11 @@ def confirm_workout_proposal(
     )
 
 
-@app.post("/workout-proposals/{proposal_id}/reject", response_model=ProposalActionResponse)
+@router.post("/workout-proposals/{proposal_id}/reject", response_model=ProposalActionResponse)
 def reject_workout_proposal(
     proposal_id: UUID,
     session: Annotated[Session, Depends(get_session)],
-    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    user_id: Annotated[UUID, Depends(get_current_user_id)],
     payload: Annotated[ProposalActionRequest, Body()] = ProposalActionRequest(),
 ) -> ProposalActionResponse:
     return _apply_proposal_decision(
@@ -303,12 +300,12 @@ def reject_workout_proposal(
     )
 
 
-@app.get("/exercises", response_model=list[ExerciseRead])
+@router.get("/exercises", response_model=list[ExerciseRead])
 def list_exercises(session: Annotated[Session, Depends(get_session)]) -> list[Exercise]:
     return list(session.scalars(select(Exercise).order_by(Exercise.id)))
 
 
-@app.get("/exercises/{exercise_id}", response_model=ExerciseRead)
+@router.get("/exercises/{exercise_id}", response_model=ExerciseRead)
 def get_exercise(
     exercise_id: Annotated[int, Path(gt=0, le=2147483647)],
     session: Annotated[Session, Depends(get_session)],
@@ -319,7 +316,7 @@ def get_exercise(
     return exercise
 
 
-@app.post("/exercises", response_model=ExerciseRead, status_code=201)
+@router.post("/exercises", response_model=ExerciseRead, status_code=201)
 def create_exercise(
     payload: ExerciseCreate, session: Annotated[Session, Depends(get_session)]
 ) -> Exercise:
@@ -341,11 +338,11 @@ def create_exercise(
     return exercise
 
 
-@app.post("/workouts", response_model=WorkoutRead, status_code=201)
+@router.post("/workouts", response_model=WorkoutRead, status_code=201)
 def create_workout(
     payload: WorkoutCreate,
     session: Annotated[Session, Depends(get_session)],
-    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    user_id: Annotated[UUID, Depends(get_current_user_id)],
 ) -> Workout:
     if payload.plan_id is not None:
         result = session.scalar(
@@ -374,12 +371,12 @@ def create_workout(
     return workout
 
 
-@app.post("/workouts/{workout_id}/sets", response_model=WorkoutSetRead, status_code=201)
+@router.post("/workouts/{workout_id}/sets", response_model=WorkoutSetRead, status_code=201)
 def create_workout_set(
     workout_id: Annotated[int, Path(gt=0, le=2147483647)],
     payload: WorkoutSetCreate,
     session: Annotated[Session, Depends(get_session)],
-    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    user_id: Annotated[UUID, Depends(get_current_user_id)],
 ) -> WorkoutSet:
     workout = session.scalar(
         select(Workout).where(Workout.id == workout_id, Workout.user_id == user_id)
@@ -417,11 +414,11 @@ def create_workout_set(
     return workout_set
 
 
-@app.get("/workouts/{workout_id}", response_model=WorkoutDetailRead)
+@router.get("/workouts/{workout_id}", response_model=WorkoutDetailRead)
 def get_workout(
     workout_id: Annotated[int, Path(gt=0, le=2147483647)],
     session: Annotated[Session, Depends(get_session)],
-    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    user_id: Annotated[UUID, Depends(get_current_user_id)],
 ) -> Workout:
     result = session.scalar(
         select(Workout)
@@ -433,11 +430,63 @@ def get_workout(
     return result
 
 
-@app.get("/workouts", response_model=list[WorkoutRead])
+@router.get("/workouts", response_model=list[WorkoutRead])
 def list_workouts(
     session: Annotated[Session, Depends(get_session)],
-    user_id: Annotated[UUID, Depends(get_demo_user_id)],
+    user_id: Annotated[UUID, Depends(get_current_user_id)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0, le=2147483647)] = 0,
 ) -> list[Workout]:
     return get_workout_history(session, user_id=user_id, limit=limit, offset=offset)
+
+
+def create_app(settings: AppSettings | None = None) -> FastAPI:
+    settings = settings or load_settings()
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        yield
+
+    production = settings.environment == "production"
+    application = FastAPI(
+        title="AI Gym Coach", lifespan=lifespan,
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
+    )
+    application.state.settings = settings
+    application.state.chat_rate_limit = (deque(), Lock())
+    application.include_router(public_routes)
+    application.include_router(router)
+    application.add_middleware(RequestBodyLimit, max_bytes=settings.max_request_bytes)
+    application.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts))
+    application.add_middleware(
+        CORSMiddleware, allow_origins=list(settings.cors_origins),
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+        allow_credentials=False,
+    )
+
+    @application.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, error: RequestValidationError) -> JSONResponse:
+        issues = []
+        for issue in error.errors()[:5]:
+            location = issue["loc"][:-1] if issue["type"] == "extra_forbidden" else issue["loc"]
+            message = "Invalid request value"
+            if issue["msg"] == "Value error, Name must not contain NUL characters":
+                message = issue["msg"]
+            issues.append({"loc": list(location), "type": issue["type"], "msg": message})
+        return JSONResponse({"detail": issues}, status_code=422)
+
+    @application.exception_handler(SQLAlchemyError)
+    async def database_error(request: Request, error: SQLAlchemyError) -> JSONResponse:
+        return JSONResponse({"detail": "Database service is unavailable"}, status_code=503)
+
+    @application.exception_handler(Exception)
+    async def unexpected_error(request: Request, error: Exception) -> JSONResponse:
+        return JSONResponse({"detail": "Internal server error"}, status_code=500)
+
+    return application
+
+
+app = create_app()

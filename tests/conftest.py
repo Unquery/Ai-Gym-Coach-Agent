@@ -14,6 +14,15 @@ from app.db.session import create_db_engine, postgres_url
 from tests.helpers import migration_config
 
 
+@pytest.fixture(autouse=True)
+def local_api_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Existing workflow tests explicitly opt into the synthetic local identity."""
+    from app.api.application import app
+    from app.config import AppSettings
+
+    monkeypatch.setattr(app.state, "settings", AppSettings(enable_demo_auth=True))
+
+
 @pytest.fixture
 def postgres_engine() -> Iterator[Engine]:
     value = os.environ.get("TEST_DATABASE_URL")
