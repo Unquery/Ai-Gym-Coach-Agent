@@ -1,4 +1,28 @@
 services:
+  backend:
+    profiles: [backend]
+    build: .
+    image: ai-gym-coach:local
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    environment:
+      APP_ENV: development
+      ENABLE_DEMO_AUTH: ${ENABLE_DEMO_AUTH:-false}
+      DATABASE_URL: ${CONTAINER_DATABASE_URL:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      ALLOWED_HOSTS: localhost,127.0.0.1
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
   db:
     image: postgres:17
     environment:

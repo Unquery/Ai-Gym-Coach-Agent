@@ -1,0 +1,11 @@
+# Only reviewed runtime source and locked dependency inputs enter the build.
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!alembic.ini
+!app/
+!app/**/*.py
+!migrations/
+!migrations/**/*.py
+!migrations/script.py.mako
