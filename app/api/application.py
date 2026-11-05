@@ -1,5 +1,7 @@
 """HTTP entry point for AI Gym Coach."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import UUID
 
@@ -13,6 +15,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
 from app.agent.loop import AgentError, run_agent
+from app.config import load_settings
 from app.agent.tools import DraftMutationContext
 from app.api.schemas import (
     AgentAnswerResponse,
@@ -66,7 +69,14 @@ from app.workouts.execution import (
 )
 from app.workouts.drafts import WorkoutDraftNotFoundError, get_workout_draft
 
-app = FastAPI(title="AI Gym Coach")
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    application.state.settings = load_settings()
+    yield
+
+
+app = FastAPI(title="AI Gym Coach", lifespan=lifespan)
 
 
 def get_demo_user_id() -> UUID:

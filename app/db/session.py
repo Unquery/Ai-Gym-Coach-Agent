@@ -8,6 +8,8 @@ from sqlalchemy import Engine, MetaData, create_engine
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import DeclarativeBase, Session
 
+from app.config import load_settings
+
 
 class Base(DeclarativeBase):
     metadata = MetaData(
@@ -36,10 +38,22 @@ def postgres_url(value: str | URL) -> URL:
 
 
 def create_db_engine(url: str | URL | None = None) -> Engine:
+    settings = load_settings()
+    target = database_url() if url is None else postgres_url(url)
     return create_engine(
-        database_url() if url is None else postgres_url(url),
+        target,
         pool_pre_ping=True,
         hide_parameters=True,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_timeout=settings.db_connect_timeout,
+        connect_args={
+            "connect_timeout": settings.db_connect_timeout,
+            "options": (
+                f"{target.query.get('options', '')} "
+                f"-cstatement_timeout={settings.db_statement_timeout_ms}"
+            ).strip(),
+        },
     )
 
 
