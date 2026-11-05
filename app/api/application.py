@@ -3,6 +3,7 @@
 from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import logging
 from threading import Lock
 from typing import Annotated
 from uuid import UUID
@@ -45,6 +46,8 @@ from app.conversations.store import (
     get_recent_conversation_history,
 )
 from app.db.session import get_session
+from app.db.health import database_ready
+from app.logging import RequestLogging
 from app.llm.client import create_llm_client
 from app.llm.config import load_llm_settings
 from app.db.models import Conversation, Exercise, Workout, WorkoutPlan, WorkoutSet
@@ -84,6 +87,17 @@ get_demo_user_id = get_current_user_id
 @public_routes.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@public_routes.get("/ready")
+def ready(request: Request) -> JSONResponse:
+    try:
+        available = database_ready(production=request.app.state.settings.environment == "production")
+    except (SQLAlchemyError, RuntimeError, ValueError):
+        available = False
+    return JSONResponse(
+        {"status": "ready" if available else "not_ready"}, status_code=200 if available else 503,
+    )
 
 
 async def get_chat_idempotency(
@@ -445,7 +459,11 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        yield
+        logging.getLogger("gym.application").info("application_started")
+        try:
+            yield
+        finally:
+            logging.getLogger("gym.application").info("application_stopped")
 
     production = settings.environment == "production"
     application = FastAPI(
@@ -464,8 +482,10 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         CORSMiddleware, allow_origins=list(settings.cors_origins),
         allow_methods=["GET", "POST"],
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+        expose_headers=["X-Request-ID"],
         allow_credentials=False,
     )
+    application.add_middleware(RequestLogging, production=production)
 
     @application.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, error: RequestValidationError) -> JSONResponse:
@@ -480,11 +500,20 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
 
     @application.exception_handler(SQLAlchemyError)
     async def database_error(request: Request, error: SQLAlchemyError) -> JSONResponse:
+        logging.getLogger("gym.application").error("database_error", extra={
+            "request_id": getattr(request.state, "request_id", None), "error_type": type(error).__name__,
+        })
         return JSONResponse({"detail": "Database service is unavailable"}, status_code=503)
 
     @application.exception_handler(Exception)
     async def unexpected_error(request: Request, error: Exception) -> JSONResponse:
-        return JSONResponse({"detail": "Internal server error"}, status_code=500)
+        request_id = getattr(request.state, "request_id", "")
+        logging.getLogger("gym.application").error("application_error", extra={
+            "request_id": request_id, "error_type": type(error).__name__,
+        })
+        return JSONResponse({"detail": "Internal server error"}, status_code=500, headers={
+            "X-Request-ID": request_id, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+        })
 
     return application
 
