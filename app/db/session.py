@@ -49,6 +49,12 @@ def create_db_engine(url: str | URL | None = None) -> Engine:
         pool_timeout=settings.db_connect_timeout,
         connect_args={
             "connect_timeout": settings.db_connect_timeout,
+            # Bound dead TCP peer detection on the Linux production runtime.
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+            "tcp_user_timeout": 15000,
             "options": (
                 f"{target.query.get('options', '')} "
                 f"-cstatement_timeout={settings.db_statement_timeout_ms}"

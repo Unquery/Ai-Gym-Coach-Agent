@@ -36,6 +36,31 @@ messages are also suppressed. Do not enable separate provider debug tracing or
 plaintext exception handlers in production. Host-platform access logs have their
 own controls: never put credentials in query strings and restrict log access.
 
+## Database connections and outage recovery
+
+One process keeps at most `DB_POOL_SIZE + DB_MAX_OVERFLOW` connections (default
+3 + 2). `DB_CONNECT_TIMEOUT` bounds pool waits and each new TCP connection attempt
+(default 5 seconds); `DB_STATEMENT_TIMEOUT_MS` bounds server-side SQL execution
+(default 15000 ms). `pool_pre_ping` detects dead idle connections on checkout and
+invalidates stale pooled connections. The next request can reconnect after an
+outage without restarting the application. Session exit rolls back unfinished work.
+
+TCP keepalives use idle=30s, interval=10s, count=3; `tcp_user_timeout=15000` caps
+unacknowledged transmitted data on supported systems, including Linux production.
+These socket settings complement connect/SQL timeouts; they are not an overall
+request deadline and cannot guarantee a bound for every server/network stall.
+Some socket options have no effect on unsupported operating systems. See
+[libpq connection options](https://www.postgresql.org/docs/17/libpq-connect.html#LIBPQ-PARAMKEYWORDS).
+
+A disconnect during SQL/commit fails that request; no transaction or write is
+automatically replayed. A lost commit acknowledgement has an unknown outcome.
+Retry chat only with the original idempotency key; confirmation reuses its
+proposal ID. Direct create routes have no durable retry key: inspect state before
+retrying an uncertain write. Do not add blanket retries around commits or provider
+calls. See [SQLAlchemy disconnect handling](https://docs.sqlalchemy.org/en/20/core/pooling.html#disconnect-handling-pessimistic).
+Readiness returns sanitized 503 during an outage and 200 after connectivity and
+the expected schema/permissions recover; liveness remains independent of the DB.
+
 Monitor 5xx rates, failed readiness, 429 responses, restart frequency and provider
 usage/budget separately in the hosting dashboard. Request logs record latency,
 not token counts or success of a provider call. Provider timeouts remain mapped
