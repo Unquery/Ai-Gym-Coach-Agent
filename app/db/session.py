@@ -63,6 +63,13 @@ def get_engine() -> Engine:
     return create_db_engine()
 
 
+def dispose_db_engine() -> None:
+    """Close an existing API pool after shutdown without opening a new one."""
+    if get_engine.cache_info().currsize:
+        get_engine().dispose()
+        get_engine.cache_clear()
+
+
 def get_session() -> Iterator[Session]:
     with Session(get_engine()) as session:
         yield session

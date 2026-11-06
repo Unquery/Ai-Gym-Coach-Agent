@@ -3,6 +3,12 @@
 Start production with `python -m app.server` (the Docker default). This configures
 JSON stdout logging and disables Uvicorn's plaintext access logs. No reload,
 automatic migrations, seed data, LLM request tracing or paid readiness requests.
+Configuration and `PORT` (1–65535, default 8000) are validated before binding;
+failure exits with code 1 and a generic `startup_configuration_error` JSON event.
+On SIGTERM, Uvicorn drains requests for up to 100 seconds and completes ASGI
+shutdown, then the entrypoint disposes any existing database pool. Keep the
+platform/container shutdown allowance at 120 seconds. Migration execution stays
+an explicit prior release step, never part of application startup.
 
 - `GET /health`: process liveness, no database/provider dependency.
 - `GET /ready`: PostgreSQL reachable and Alembic revision matches the packaged
