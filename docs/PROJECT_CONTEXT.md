@@ -405,6 +405,15 @@ No demo migration, live Groq request, cloud deployment or push was performed.
 Cloud TLS/routing, actual provider grants/quotas and backup restore remain
 unverified. Complete backend MVP and public multi-user readiness remain open.
 
+The production follow-up validates `PORT`, sanitizes startup failures and disposes
+the existing pool after graceful shutdown. TCP keepalives/user timeout complement
+the existing pool pre-ping and SQL/connect limits without replaying transactions.
+An actual disposable PostgreSQL stop/start restored readiness with the same Engine
+and retained committed data. Interrupted writes roll back and stale connections
+are replaced. Incomplete/trickled HTTP bodies have a total 10-second deadline
+before business execution. See [the deployment gate](DEPLOYMENT_CHECKLIST.md) for
+local verification and remaining cloud requirements; no deployment is implied.
+
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
 - AI workout persistence requires a separate explicit human confirmation of the reviewed proposal; draft preparation/edit requests never grant that consent.

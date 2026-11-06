@@ -79,6 +79,9 @@ runtime checks. Disposable PostgreSQL role checks confirmed runtime DML, denied
 DDL/revision writes and rejected elevated membership/bypass-RLS. External cloud
 TLS/routing, provider grants, restore procedures and live requests remain unverified.
 Free-tier hosting and single-operator access do not establish public multi-user readiness.
+The follow-up verified graceful SIGTERM and database outage recovery, added safe
+startup failures/TCP safeguards and closed the stalled-body deadline gap.
+Use [the deployment gate](DEPLOYMENT_CHECKLIST.md) before any approved deployment.
 
 ## Remaining backend priorities
 

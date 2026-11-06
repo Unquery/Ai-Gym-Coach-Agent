@@ -39,7 +39,9 @@ an optional backend profile; a separate production Compose file and Render
 Blueprint are prepared. Cloud deployment and full backend MVP verification remain
 pending. Start with [the deployment guide](docs/DEPLOYMENT.md),
 [security boundary](docs/SECURITY.md), [migration workflow](docs/MIGRATIONS.md)
-and [operations](docs/OPERATIONS.md). No cloud resources have been created.
+and [operations](docs/OPERATIONS.md). The concise
+[deployment gate](docs/DEPLOYMENT_CHECKLIST.md) lists remaining cloud checks.
+No cloud resources have been created.
 
 ## Setup (Windows PowerShell)
 

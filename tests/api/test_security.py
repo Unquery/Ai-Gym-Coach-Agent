@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Iterator
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.application import create_app
+from app.api.security import RequestBodyLimit
 from app.config import AppSettings
 from app.db.models import Workout
 from app.db.session import get_session
@@ -96,6 +98,31 @@ def test_authenticated_chat_is_rate_limited_without_provider_calls(secured_app) 
                                headers={"Authorization": "Bearer " + TOKEN}).status_code
                     for _ in range(3)]
         assert statuses == [422, 422, 429]
+
+
+@pytest.mark.parametrize("trickle", [False, True])
+def test_incomplete_body_has_total_deadline_before_business_execution(trickle: bool) -> None:
+    async def check():
+        responses = []
+
+        async def downstream(scope, receive, send):
+            raise AssertionError("Incomplete request reached business execution")
+
+        async def receive():
+            if trickle:
+                await asyncio.sleep(0.005)
+                return {"type": "http.request", "body": b"x", "more_body": True}
+            await asyncio.Event().wait()
+
+        async def send(message):
+            responses.append(message)
+
+        middleware = RequestBodyLimit(downstream, 16384, read_timeout_seconds=0.02)
+        await asyncio.wait_for(middleware({"type": "http"}, receive, send), timeout=1)
+        assert responses[0]["status"] == 408
+        assert (b"connection", b"close") in responses[0]["headers"]
+
+    asyncio.run(check())
 
 
 @pytest.mark.postgres

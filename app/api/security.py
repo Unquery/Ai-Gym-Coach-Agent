@@ -1,5 +1,6 @@
 """Single-operator authentication and bounded HTTP input for the portfolio MVP."""
 
+from asyncio import timeout
 from hmac import compare_digest
 from time import monotonic
 from uuid import UUID
@@ -36,28 +37,41 @@ def get_current_user_id(request: Request) -> UUID:
 
 
 class RequestBodyLimit:
-    """Bound actual streamed bytes, including requests without Content-Length."""
+    """Bound streamed bytes and total body-read time, including chunked uploads."""
 
-    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+    def __init__(self, app: ASGIApp, max_bytes: int, read_timeout_seconds: float = 10) -> None:
         self.app = app
         self.max_bytes = max_bytes
+        self.read_timeout_seconds = read_timeout_seconds
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         body = bytearray()
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                return
-            chunk = message.get("body", b"")
-            if len(body) + len(chunk) > self.max_bytes:
-                await JSONResponse({"detail": "Request body too large"}, status_code=413)(scope, receive, send)
-                return
-            body.extend(chunk)
-            if not message.get("more_body", False):
-                break
+        oversized = False
+        try:
+            async with timeout(self.read_timeout_seconds):
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        return
+                    chunk = message.get("body", b"")
+                    if len(body) + len(chunk) > self.max_bytes:
+                        oversized = True
+                        break
+                    body.extend(chunk)
+                    if not message.get("more_body", False):
+                        break
+        except TimeoutError:
+            await JSONResponse(
+                {"detail": "Request body read timed out"}, status_code=408,
+                headers={"Connection": "close"},
+            )(scope, receive, send)
+            return
+        if oversized:
+            await JSONResponse({"detail": "Request body too large"}, status_code=413)(scope, receive, send)
+            return
 
         sent = False
 

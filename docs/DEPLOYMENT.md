@@ -88,6 +88,9 @@ exceeding the server's 100-second graceful shutdown timeout.
 
 ## Updates, rollback and remaining verification
 
+Use [the deployment gate checklist](DEPLOYMENT_CHECKLIST.md) to distinguish local
+verification from the checks still required in the target environment.
+
 For every release: test/build the chosen commit, back up, pause writes, run the
 guarded migration job, then manually deploy that exact commit. No push or deploy
 is implied by a local Git commit. Keep auto-deploy disabled and confirm the

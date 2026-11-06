@@ -27,7 +27,9 @@ Configure `ALLOWED_HOSTS` for the exact API hostname plus `localhost,127.0.0.1`
 for internal probes. CORS defaults to no allowed origins; explicitly list HTTPS
 frontend origins if needed. CORS is browser policy, not authentication.
 
-HTTP bodies are capped at 16 KiB, even without Content-Length. Chat messages also
+HTTP bodies are capped at 16 KiB, even without Content-Length. Incomplete/slow
+bodies have a total 10-second read deadline, including trickled chunks; timeout
+returns 408 and closes the connection before business execution. Chat messages also
 retain their 4,000-character schema limit. Validation responses omit supplied
 values, unknown field names and exception context. Database/unexpected failures
 return generic 503/500 responses. The server admits at most 16 concurrent HTTP
