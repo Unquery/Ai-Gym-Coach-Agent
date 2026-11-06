@@ -55,8 +55,9 @@ for legacy or manually added sets whose position is null. No legacy order is inv
 
 ## Ownership and deletion
 
-`user_id` is an opaque UUID belonging to a future authenticated principal. There
-is no local users table or authentication yet. A composite FK from
+`user_id` is an opaque UUID supplied by the authenticated single-operator HTTP
+boundary (synthetic only in opt-in local demo mode). There is no local users
+table or public multi-user authentication. A composite FK from
 `workouts(plan_id, user_id)` to `workout_plans(id, user_id)` prevents attaching a
 workout to another owner's plan. The ORM relationship writes only `plan_id`;
 assigning a plan must not silently replace the workout's owner.
@@ -64,9 +65,9 @@ assigning a plan must not silently replace the workout's owner.
 Sets inherit ownership through their workout; plan entries inherit it through
 their plan. Exercises are shared catalog records. These constraints do not
 authorize reads: existing workout/proposal queries filter by a server-selected
-demo owner; conversation/draft services check the owned parent, and request replay
+authenticated owner; conversation/draft services check the owned parent, and request replay
 rechecks access to the response conversation before returning cached data.
-Real authentication must eventually supply the trusted `user_id`. Never trust an
+The bearer token maps to the configured `API_OWNER_ID`. Never trust an
 arbitrary caller-provided owner UUID as authentication. No arbitrary SQL tool is exposed.
 
 Deleting a workout cascades to its sets. Deleting an unused plan cascades to its
@@ -113,8 +114,9 @@ in disposable test schemas.
 
 Compose bootstraps a dedicated non-superuser `gym_app` role using local passwords.
 It owns its tables and can create schemas for local migrations/tests. That is a
-development permission set; deployment should separate migrations/tests from a
-runtime role with only required data permissions. PostgreSQL stays on loopback.
+development permission set; production separates migrations/tests from a
+runtime role with only required data permissions; see [MIGRATIONS.md](MIGRATIONS.md).
+Local PostgreSQL stays on loopback; managed production PostgreSQL uses TLS.
 
 ## Proposal snapshots and human decisions
 

@@ -1,6 +1,7 @@
 # Roadmap
 
-**Milestones 1–7 are complete for the verified scope below.** The next work is
+**Milestones 1–8 are complete for the verified scope below.** Milestone 8 covers
+local deployment preparation, not a live deployment. The next work is
 the remaining backend MVP priorities. This list replaces the
 earlier zero-based phase numbering, which mixed completed work with future scope.
 
@@ -15,6 +16,7 @@ earlier zero-based phase numbering, which mixed completed work with future scope
 | 5 — Confirmed workout logging | Complete | Catalog-validated proposals, PostgreSQL lifecycle, atomic/idempotent workout execution, chat and confirm/reject HTTP routes; mocked-provider PostgreSQL workflow tests and recorded live Groq logging followed by separate human HTTP confirmation. |
 | 6 — Conversation Memory & Multi-Turn AI Agent | Complete | Owner-scoped transactional chat, bounded memory, versioned draft append/edit/remove, saved-draft proposals and durable HTTP retries; migrations `0004`–`0008`. Verified by offline PostgreSQL tests and separately approved real HTTP/Groq scenarios followed by human confirmation. |
 | 7 — Agent Reliability & Evaluation | Complete (offline scope) | Safe provider/tool failures, bounded-history checks, useful argument feedback, refreshed draft state, compact context, sanitized reports/CLI and a reviewed nine-scenario baseline. Mocked-provider/PostgreSQL verification; live-model quality and production observability remain unverified. |
+| 8 — Backend Deployment & Production Readiness | Complete (local preparation) | Validated settings/secrets, lightweight non-root image, transactional locked release migrations, restricted runtime role, single-operator bearer authentication, CORS/Host/input limits, readiness and JSON logs; production Compose and Render/Neon configuration. No cloud deployment or live-provider verification. |
 
 The 2026-10-31 closure audit passed all 772 tests without skips or warnings.
 "Live-verified" refers only to explicitly
@@ -62,16 +64,34 @@ correct tools, zero safety violations). No full-suite rerun or live provider cal
 This scope excludes live-model language-quality guarantees, overall agent deadlines,
 production request/draft limits, runtime observability and production readiness.
 
+## Milestone 8 completion checklist
+
+- [x] Validate production configuration, disable demo identity and separate runtime/release secrets.
+- [x] Build a locked multi-stage non-root production image with a minimal build context.
+- [x] Run guarded transactional Alembic upgrades as an explicit release job; verify repeatability, rollback and runtime DDL restrictions.
+- [x] Require single-operator bearer authentication, preserve owner checks and harden CORS/Host/input/error boundaries.
+- [x] Add migration-aware readiness, role checks and sanitized structured logging.
+- [x] Prepare manual Render Free + Neon configuration, release/recovery instructions and separate environment templates without deploying.
+
+The 2026-11-07 audit passed 403 focused tests with no skips, and the offline CLI
+matched the nine-scenario baseline. The image built and passed offline non-root
+runtime checks. Disposable PostgreSQL role checks confirmed runtime DML, denied
+DDL/revision writes and rejected elevated membership/bypass-RLS. External cloud
+TLS/routing, provider grants, restore procedures and live requests remain unverified.
+Free-tier hosting and single-operator access do not establish public multi-user readiness.
+
 ## Remaining backend priorities
 
 Workout planning and plan-retrieval tools remain planned despite the existing
 plan tables. Exercise-name lookup for progress and automatic relative-date context
-are not implemented. Authentication, deployment role separation, broader security
-hardening, broader/live-model evaluations, and runtime observability remain future work;
+are not implemented. Public multi-user authentication, broader security
+hardening, live-model evaluations, overall agent deadlines, persisted-draft bounds
+and external metrics/alerting remain future work;
 existing validation, owner filtering, and mocked safety tests already exist.
 
-Docker Compose currently runs PostgreSQL only. Application containerization,
-complete backend deployment verification, and final portfolio/demo materials
+Docker Compose defaults to PostgreSQL and now offers an application profile;
+production containerization/configuration are prepared. Cloud deployment,
+complete backend end-to-end verification, and final portfolio/demo materials
 remain planned. Complete and verify the API-first, client-independent backend
 MVP before frontend/mobile development; the preferred later client remains
 Android with Kotlin and Jetpack Compose.

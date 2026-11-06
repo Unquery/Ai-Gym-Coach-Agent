@@ -7,7 +7,8 @@ automatic migrations, seed data, LLM request tracing or paid readiness requests.
 - `GET /health`: process liveness, no database/provider dependency.
 - `GET /ready`: PostgreSQL reachable and Alembic revision matches the packaged
   head. In production it also rejects superuser/role-creation/database-creation,
-  schema-creation and table-owner/member credentials. Returns 200
+  schema-creation, bypass-RLS and table-owner/member credentials, including
+  membership in elevated roles. Returns 200
   `{"status":"ready"}` or sanitized 503 `{"status":"not_ready"}`. It cannot
   prove provider availability or validate every future schema permission.
 

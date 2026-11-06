@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+# Prepared only; creating a Blueprint starts a deployment and needs approval.
+services:
+  - type: web
+    name: ai-gym-coach
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    autoDeployTrigger: "off"
+    healthCheckPath: /ready
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: ENABLE_DEMO_AUTH
+        value: "false"
+      - key: ALLOWED_HOSTS
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: API_AUTH_TOKEN
+        generateValue: true
+      - key: API_OWNER_ID
+        sync: false
+      - key: LLM_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_MODEL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: DB_POOL_SIZE
+        value: "3"
+      - key: DB_MAX_OVERFLOW
+        value: "2"
+      - key: LOG_LEVEL
+        value: INFO

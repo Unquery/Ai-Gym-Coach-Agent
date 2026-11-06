@@ -2,12 +2,15 @@
 
 An AI-powered workout logging and progress analysis assistant built as a Junior AI Engineering portfolio project.
 
-**Status:** Milestones 1–7 complete for their verified scope. **Milestone 7 —
+**Status:** Milestones 1–8 complete for their verified scope. **Milestone 7 —
 Agent Reliability & Evaluation** adds safe provider/tool failure handling,
 bounded-context checks, refreshed draft snapshots, compact tool context, and
 offline evaluation reports with a reviewed regression baseline. Migration head
-remains `0008` (11 tables). Production authentication,
-planning tools and complete backend deployment remain future work.
+remains `0008` (11 tables). **Milestone 8 — Backend Deployment & Production
+Readiness** is complete for local preparation: validated production settings,
+a non-root Docker image, guarded migrations, single-operator bearer access,
+readiness and sanitized JSON logs. Cloud deployment and verification remain
+pending; planning tools and public multi-user authentication remain future work.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
@@ -16,7 +19,7 @@ It provides exercise/workout APIs, typed `get_recent_workouts` and
 `get_exercise_progress` tools, deterministic Decimal metrics, and a configurable
 OpenAI-compatible LLM client.
 
-Authentication and workout planning/plan-retrieval tools remain planned.
+Workout planning/plan-retrieval tools and public multi-user authentication remain planned.
 The agent can also prepare catalog-validated pending workout proposals for human
 review. A PostgreSQL proposal store tracks confirmation, rejection, and expiration.
 A separate server-side executor can atomically save confirmed workouts and their
@@ -31,8 +34,12 @@ and multi-turn draft/proposal flows followed by separate human confirmation.
 The 2026-10-31 closure audit passed all 772 tests with no skips or warnings.
 These scenario checks do not establish
 general model reliability. See [verification status](docs/PROJECT_CONTEXT.md#verification-status)
-for recorded test runs and limits. Compose currently runs PostgreSQL only;
-application deployment and full backend MVP verification remain planned.
+for recorded test runs and limits. Compose defaults to PostgreSQL only and offers
+an optional backend profile; a separate production Compose file and Render
+Blueprint are prepared. Cloud deployment and full backend MVP verification remain
+pending. Start with [the deployment guide](docs/DEPLOYMENT.md),
+[security boundary](docs/SECURITY.md), [migration workflow](docs/MIGRATIONS.md)
+and [operations](docs/OPERATIONS.md). No cloud resources have been created.
 
 ## Setup (Windows PowerShell)
 
@@ -99,9 +106,17 @@ The named Docker volume preserves data across container restarts and
 
 See [the storage design](docs/DATABASE.md) for tables, ownership, and transaction
 boundaries. Exercise creation, workout/set logging, workout details, and history
-are available in local demo mode; authentication is not implemented yet.
+are available in explicit local demo mode. Production requires bearer authentication.
 
 ## Run
+
+The examples below use `APP_ENV=development` and `ENABLE_DEMO_AUTH=true`
+from `.env.example`, bind only loopback and use synthetic data. Demo identity is
+disabled by default and forbidden in production. Production business requests
+require `Authorization: Bearer <API_AUTH_TOKEN>`; the server maps that secret to
+one configured non-demo `API_OWNER_ID`. Never embed it in a public client.
+Interactive docs are available only in development. Production settings, secret
+templates and release commands are in [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 From the repository root in PowerShell:
 
@@ -230,8 +245,8 @@ flush pending changes, commit, or roll back the caller's transaction.
 This tool can be called directly or through the read-only agent workflow below.
 The caller must validate model-supplied arguments with
 `GetRecentWorkoutsInput` before execution; identity never comes from those
-arguments. Authentication remains deferred; the HTTP API still uses its demo
-owner dependency.
+arguments. The HTTP API supplies the authenticated operator's owner; only explicit
+local demo mode uses the synthetic owner.
 
 ## LLM client configuration
 
@@ -393,7 +408,7 @@ and preparatory draft changes are allowed: no `Workout`/`WorkoutSet` is created
 or confirmed. The existing
 `decide_workout_proposal` and `execute_confirmed_workout` functions remain separate
 trusted user-action backend operations, now called by the HTTP actions below.
-Authentication remains planned. Pydantic validates structure, not extraction fidelity;
+Bearer authentication protects production routes. Pydantic validates structure, not extraction fidelity;
 human review of the actual snapshot is still necessary.
 
 ```powershell
@@ -407,8 +422,8 @@ uv run --env-file .env --locked pytest tests/agent/test_agent.py tests/workouts/
 returned ID for subsequent messages. Leading/trailing message whitespace is
 trimmed; length must be 1–4000 characters. Invalid values and extra fields,
 including client-provided history, `user_id` and confirmation flags, return
-422 before an LLM client is created. The server uses the existing synthetic
-demo-user dependency; this remains local demo identity, not authentication.
+422 before an LLM client is created. The server supplies the authenticated owner;
+the synthetic demo identity is available only in explicit local development mode.
 
 Request:
 
@@ -494,8 +509,8 @@ human action. These routes never call the LLM and are not agent tools:
 
 The body can be omitted or `{}`; fields are forbidden, including owner IDs,
 confirmation flags and edited sets. UUIDs serialize as strings. The server uses
-the existing demo-owner dependency, not client-selected identity; authentication
-remains planned. Retrieve the saved sets through the existing workout detail API.
+the authenticated operator's owner, never client-selected identity. Retrieve the
+saved sets through the existing workout detail API.
 
 Each action uses one transaction and an owner-scoped proposal row lock. Confirm
 reuses the stored snapshot and existing decision/execution services, committing
@@ -575,7 +590,7 @@ does not commit or roll back the caller's transaction. It reuses the existing
 Decimal calculation. The agent receives JSON with decimal strings and is
 instructed to report returned statistics, explain absent comparisons, and avoid
 inventing exercise IDs or treating zero external load as zero effort.
-Authentication remains deferred; trusted server code must supply the owner.
+Trusted server code supplies the authenticated owner; public multi-user access remains planned.
 
 ```powershell
 uv run --locked pytest tests/workouts/test_progress.py -q
@@ -648,7 +663,7 @@ states cannot transition again; repeated or conflicting decisions raise
 `ProposalClosedError`. At `now >= expires_at`, a pending decision returns
 `state="expired"`, without confirming or rejecting. Unknown and foreign-owner
 IDs both raise `ProposalNotFoundError`. IDs do not replace authorization: trusted
-server code supplies the owner, and authentication remains a future task.
+server code supplies the authenticated owner. Public multi-user authentication remains planned.
 
 Reads and decisions lock the owner-scoped row with `SELECT FOR UPDATE`; time is
 read using PostgreSQL `clock_timestamp()` after the lock is acquired. This avoids
@@ -715,7 +730,7 @@ inserting duplicates or requiring catalog revalidation again. Calling
 decision handler handles same-action replay without calling that transition again.
 
 This executor is not an LLM tool. The confirm HTTP action above calls it in the
-same transaction as the human decision. Authentication remains planned.
+same transaction as the human decision. Production requires the operator bearer token.
 No live LLM call is needed to execute or test it.
 
 ```powershell
@@ -811,7 +826,16 @@ No full-suite rerun or live Groq calls were made. These checks verify scripted
 integration/safety, not real-model interpretation or language quality. Compact JSON
 preserves unknown values and reduces context characters; actual provider-token
 savings have not been measured. Live-model evaluation, an overall agent deadline,
-production prompt/draft limits and observability remain future work.
+production prompt/draft bounds and broader metrics/alerting remain future work.
+Milestone 8 adds HTTP request limits, readiness and sanitized runtime logs.
+
+The 2026-11-07 Milestone 8 audit passed 403 focused tests without skips and reran
+the offline CLI: 9/9 tasks, 100% tool accuracy, zero safety violations and no
+baseline regressions. The production image built and passed non-root, read-only,
+network-disabled runtime checks. Disposable PostgreSQL verification confirmed
+repeatable migrations, runtime DML, denied DDL/revision writes and readiness
+rejection of elevated role membership/bypass-RLS. Cloud TLS/routing, backup
+restore and live-provider behavior were not verified; no deployment was run.
 
 ## Test
 
@@ -859,8 +883,12 @@ app/seed.py           Explicit synthetic demo seed
 evals/                Offline/live opt-in runners, reports and reviewed baseline
 migrations/           Versioned schema changes
 alembic.ini           Migration configuration (no credentials)
-compose.yaml          Local PostgreSQL with persistent volume
-docker/postgres/      Non-superuser application-role initialization
+compose.yaml          Local PostgreSQL and optional backend/release profile
+compose.production.yaml Managed-PostgreSQL backend and separate release job
+Dockerfile            Locked, multi-stage non-root production image
+render.yaml           Manual-deploy Render Free Blueprint (not deployed)
+deploy/               Placeholder-only runtime/migration secret templates
+docker/postgres/      Development role and restricted production runtime grants
 tests/                HTTP, PostgreSQL persistence, and migration tests
 pyproject.toml        Runtime/dev dependencies and pytest configuration
 uv.lock               Resolved dependency versions; keep in version control

@@ -15,11 +15,15 @@ Alembic, Pydantic, pytest, and uv. The OpenAI SDK Chat Completions client is
 configured for an OpenAI-compatible provider; Groq has recorded live verification,
 while local Ollama configuration is documented but not live-verified.
 The agent loop is explicit Python; no orchestration framework is installed.
-Docker Compose currently runs the database only.
+Docker Compose defaults to the database and has an optional backend/release
+profile. A non-root production Docker image, managed-database Compose file and
+manual Render Free + Neon configuration are prepared; no cloud deployment exists.
 
 | Boundary | Implementation |
 | --- | --- |
-| HTTP and transactions | `app.main:app` entry point, `app.api.application`, `app.api.schemas`, `app.workouts.schemas`; request-scoped sessions and server-selected demo identity. |
+| HTTP and transactions | `app.main:app` entry point, `app.api.application`, `app.api.schemas`, `app.workouts.schemas`; request-scoped sessions and authenticated operator identity (explicit demo opt-in only in development). |
+| Production runtime | `app.config`, `app.server`, `app.logging`, `app.db.health`; validated settings, single-process limits, sanitized JSON logs and read-only migration/role-aware readiness. |
+| Deployment migrations | `app.db.migrate`; explicit release credentials, advisory transaction lock and atomic Alembic upgrade, separate restricted runtime role. |
 | Agent and provider | `app.agent.loop`, `app.llm.client`, `app.llm.config`; bounded runs, typed results and server-loaded conversation context. |
 | Tool authorization and validation | `app.agent.dispatch`, `app.agent.tool_schemas`, `app.agent.tools`; two reads plus either direct pending proposals or active-draft append/edit/remove/conversion. No confirmation/execution tools. |
 | Conversation memory | `app.conversations.store`, `app.conversations.history`; owner-scoped row locks, ordered turns, bounded complete text pairs. |
@@ -34,12 +38,13 @@ or mobile application development.
 
 ## Development priorities
 
-Milestones 1–7 are complete for their verified scope; Milestone 7 covers offline
-agent reliability/evaluation rather than production readiness. Remaining priorities:
+Milestones 1–8 are complete for their verified scope; Milestone 7 covers offline
+agent reliability/evaluation and Milestone 8 covers local deployment preparation,
+not cloud verification or public multi-user readiness. Remaining priorities:
 
 1. Add workout planning and plan-retrieval tools; retain explicit human confirmation for AI-proposed workout writes.
-2. Add real authentication, deployment role separation, broader security hardening, broader/live-model evaluations, and runtime observability. Existing error handling and safety tests must be preserved.
-3. Prepare application Docker deployment and verify the complete backend MVP end to end.
+2. Add public multi-user authentication, broader security/live-model evaluations, overall agent deadlines, persisted-draft bounds and external metrics/alerting. Preserve existing safety tests.
+3. Perform a separately approved cloud deployment and verify the complete backend MVP end to end.
 4. Only after backend MVP verification, start frontend development, preferably an Android application using Kotlin and Jetpack Compose.
 
 Keep frontend-specific behavior in client applications; agent and database layers
@@ -62,15 +67,15 @@ prevents cross-owner plan attachment. See [DATABASE.md](DATABASE.md) for the sch
 transaction boundaries, and permissions. Docker Compose provides local storage;
 real PostgreSQL tests run in disposable schemas. This was the initial storage
 milestone; subsequent statistics and LLM integration are implemented below.
-Authentication remains planned.
+Public multi-user authentication remains planned; Milestone 8 adds single-operator access.
 
 Milestone 3 is complete: exercise catalog reads/creation, workout/set creation,
 workout details with performed sets, and paginated workout history.
 Workout creation accepts optional plan/time fields; the server dependency uses
-the existing synthetic demo owner until authentication is implemented. Requests
+the authenticated operator's owner (synthetic only in explicit local demo mode). Requests
 cannot choose an owner. Plan validation filters by both plan ID and owner; the
 composite foreign key remains the final consistency check. Creating a workout
-does not create performed sets. This is a local demo mode without authentication.
+does not create performed sets. Local examples use opt-in synthetic demo access.
 
 `POST /workouts/{workout_id}/sets` records one performed set after checking the
 workout's owner and the shared exercise's existence. Required typed inputs are
@@ -105,7 +110,7 @@ defaults/bounds as the API and rejects unknown fields. Server code supplies the
 session and owner separately; the tool returns `list[WorkoutRead]`. The HTTP
 history route and tool share an owner-filtered query in `app.workouts.queries`, with
 autoflush disabled so reads cannot flush pending changes. The tool does not
-manage transactions. Authentication remains planned.
+manage transactions. HTTP authentication supplies the owner; tools never select it.
 The implemented progress tool reuses tested calculations, described below.
 
 The first LLM integration uses the official OpenAI Python SDK and synchronous
@@ -200,7 +205,7 @@ link commit together or roll back together. Linked workouts cannot be deleted
 while referenced. IDs, per-exercise numbering, reps, Decimal external weights, and
 interleaved set order are preserved. Confirmation TTL limits consent, not later
 execution/retries. No executor is exposed to the LLM; human-action HTTP routing
-is described below, and authentication remains future work.
+is described below and now requires the authenticated operator.
 
 Milestone 5 is complete. `app.agent.run_agent` integrates pending proposal creation alongside the two
 read tools through the same bounded loop. The separate `run_read_only_agent`
@@ -215,12 +220,13 @@ sole call in a complete batch; both outcomes terminate the loop with a typed
 The caller owns the transaction and reports storage only after commit; failures
 roll back. One run creates at most one proposal; separate runs can create new
 pending snapshots. Neither confirmation nor workout execution is registered as
-an agent tool. Human-action HTTP routing is described below; authentication remains planned.
+an agent tool. Human-action HTTP routing is described below; public multi-user access remains planned.
 
 Milestone 5 added the synchronous `POST /agent/chat` adapter for run_agent.
 Its strict message field trims whitespace and limits length to 1–4000;
-Milestone 6 adds optional conversation_id, as described below. Server-side demo identity and request-scoped sessions are
-injected; authentication remains planned. Successful JSON uses `type="answer"`
+Milestone 6 adds optional conversation_id, as described below. Server-side identity
+and request-scoped sessions are injected; Milestone 8 authenticates the operator.
+Successful JSON uses `type="answer"`
 with text or `type="proposal"` with the existing structured human-review result.
 Pending/clarification status stays explicit, and Decimal weights serialize as
 strings. The route owns one transaction and closes the LLM client before commit;
@@ -233,8 +239,8 @@ Conversation persistence is now integrated below; UI remains deferred.
 
 Separate `POST /workout-proposals/{proposal_id}/confirm` and `/reject` actions
 accept an omitted/empty body and forbid client fields, including snapshot edits
-and identity/authorization flags. Both inject the existing server-side demo owner
-and request-scoped session; authentication remains planned. They never call the
+and identity/authorization flags. Both inject the authenticated owner
+and request-scoped session. They never call the
 LLM. A shared HTTP helper holds the owner-scoped row lock and uses the existing
 store/executor in one transaction. Confirm atomically commits consent, workout,
 all sets and the execution link; rejection creates no workout. Responses follow
@@ -325,8 +331,8 @@ configuration/infrastructure/incompatibility, and interruption respectively.
 An opt-in live runner exists with request/token/size budgets, but no Milestone 7
 live Groq verification was performed. Offline scores do not measure real-model
 language understanding, and zero offline tokens are not measured token savings.
-An overall runtime deadline, production prompt/draft-size limits and runtime
-observability remain future work.
+An overall runtime deadline, production prompt/draft-size limits and
+external metrics/alerting remain future work; Milestone 8 adds runtime JSON logs.
 
 ## Verification status
 
@@ -365,12 +371,39 @@ exactly one workout/two reviewed sets; independent read-only PostgreSQL inspecti
 confirmed the values. Confirmation added no Groq calls/tokens. The closure audit
 rechecked that evidence without new provider calls or data writes.
 
-Completion does not mean production readiness: demo identity is not authentication;
-deployment roles, app containerization, broader security/live evaluation/observability,
-planning tools, public draft management and local Ollama live verification remain
-future work. Migrations were tested in isolated schemas; no demo upgrade is implied.
+Milestone 7 completion did not establish production readiness. Milestone 8 adds
+operator authentication, deployment roles, containerization and runtime logs below;
+public multi-user access, broader live evaluation, planning tools, public draft
+management and local Ollama live verification remain future work. Migrations were
+tested in isolated databases/schemas; no demo upgrade is implied.
 History character bounds do not cap the whole prompt or current draft; overall
-agent deadlines and production request/draft-size limits remain future hardening.
+agent deadlines and persisted-draft/whole-prompt bounds remain future hardening.
+
+## Milestone 8 deployment preparation
+
+Production configuration rejects demo identity, unsafe URLs, wildcard hosts/CORS
+and missing credentials. Business routes require a constant-time checked bearer
+secret mapped to one configured non-demo owner; this is trusted-operator access,
+not public multi-user authentication. HTTP bodies/chat frequency/concurrency are
+bounded; error responses and JSON stdout logs omit sensitive input/exception text.
+Readiness checks PostgreSQL, migration head and restricted runtime role privileges.
+
+The locked Python slim image runs as UID 10001 without development dependencies.
+Release migrations use only `MIGRATION_DATABASE_URL`, acquire a transaction-level
+advisory lock and upgrade atomically without reset/seed/startup DDL. Runtime gets
+only restricted DML credentials; role provisioning is an explicit operator step.
+Prepared deployment is Render Free plus Neon, with manual release ordering and
+automatic deploys disabled. See [DEPLOYMENT.md](DEPLOYMENT.md),
+[MIGRATIONS.md](MIGRATIONS.md), [SECURITY.md](SECURITY.md) and [OPERATIONS.md](OPERATIONS.md).
+
+Audit on 2026-11-07: 403 focused tests passed without skips; offline CLI 9/9 tasks,
+100% tool accuracy, zero safety violations and no baseline regressions. Production
+image built and passed offline non-root/read-only checks. A separate disposable
+PostgreSQL container verified repeatable migrations, runtime DML, denied DDL and
+revision writes, plus readiness rejection of elevated membership and bypass-RLS.
+No demo migration, live Groq request, cloud deployment or push was performed.
+Cloud TLS/routing, actual provider grants/quotas and backup restore remain
+unverified. Complete backend MVP and public multi-user readiness remain open.
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

@@ -24,7 +24,13 @@ def database_ready(*, production: bool) -> bool:
             return False
         if production:
             unsafe_role = connection.scalar(text("""
-                SELECT rolsuper OR rolcreatedb OR rolcreaterole
+                SELECT rolsuper OR rolcreatedb OR rolcreaterole OR rolbypassrls
+                    OR EXISTS (
+                        SELECT 1 FROM pg_roles privileged
+                        WHERE (privileged.rolsuper OR privileged.rolcreatedb
+                            OR privileged.rolcreaterole OR privileged.rolbypassrls)
+                            AND pg_has_role(current_user, privileged.rolname, 'MEMBER')
+                    )
                     OR has_schema_privilege(current_user, current_schema(), 'CREATE')
                     OR has_database_privilege(current_user, current_database(), 'CREATE')
                     OR EXISTS (
