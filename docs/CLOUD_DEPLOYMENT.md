@@ -1,7 +1,8 @@
 # Milestone 9: Cloud deployment and live verification
 
-Status: local preparation in progress; no cloud resources or live requests have
-been authorized. M8's local acceptance remains complete. This milestone closes
+Status: local preparation complete; waiting for account access and explicit cloud
+approval. No cloud resources or live requests have been authorized. M8's local
+acceptance remains complete. This milestone closes
 only after the external checks below actually pass; do not infer deployment from
 the presence of a Blueprint, API key or local image.
 
@@ -144,3 +145,26 @@ Stop on missing account access, unexpected existing data, paid-plan requirements
 unsafe runtime privileges, migration failure, TLS/auth/readiness failure or quota
 errors. A failed gate leaves M9 incomplete. Public multi-user auth and new product
 features remain outside this deployment milestone.
+
+## Local handoff evidence
+
+The reviewed Blueprint and rollout plan are committed separately from the offline
+preflight. Preflight/configuration checks passed 30 cases; the final separation
+change passed an 11-case focused rerun. Tests use synthetic values and forbid
+DNS/connection calls. No existing agent, persistence or HITL implementation changed.
+
+Private files prepared locally and confirmed ignored by Git:
+
+- `.local/m9-runtime.env`: fresh local operator token/owner and runtime password,
+  initial 2/60 admission limits; actual Neon/Render hosts and Groq key still missing.
+- `.local/m9-migration.env`: migrator URL template, still awaiting the selected target.
+- `.local/m9-role.env`: the matching runtime password for the separate role setup;
+  never load this into the API or migration preflight process.
+
+No existing private files were overwritten and generated values were never printed.
+Both incomplete profiles correctly fail offline preflight with sanitized output.
+This is expected refusal, not successful validation of production credentials.
+Only the initial private-secret generation happened; no role or account key was
+created or rotated at a provider. No push, resource creation, deployment, DB access,
+live Groq request or paid action occurred. M9 remains incomplete pending account
+inspection, a concrete approved deployment and the external acceptance evidence.
