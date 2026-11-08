@@ -1,7 +1,7 @@
 # Roadmap
 
 **Milestones 1–8 are complete for the verified scope below.** Milestone 8 covers
-local deployment preparation, not a live deployment. The next work is
+locally verified deployment preparation, not a live cloud deployment. The next work is
 the remaining backend MVP priorities. This list replaces the
 earlier zero-based phase numbering, which mixed completed work with future scope.
 
@@ -16,7 +16,7 @@ earlier zero-based phase numbering, which mixed completed work with future scope
 | 5 — Confirmed workout logging | Complete | Catalog-validated proposals, PostgreSQL lifecycle, atomic/idempotent workout execution, chat and confirm/reject HTTP routes; mocked-provider PostgreSQL workflow tests and recorded live Groq logging followed by separate human HTTP confirmation. |
 | 6 — Conversation Memory & Multi-Turn AI Agent | Complete | Owner-scoped transactional chat, bounded memory, versioned draft append/edit/remove, saved-draft proposals and durable HTTP retries; migrations `0004`–`0008`. Verified by offline PostgreSQL tests and separately approved real HTTP/Groq scenarios followed by human confirmation. |
 | 7 — Agent Reliability & Evaluation | Complete (offline scope) | Safe provider/tool failures, bounded-history checks, useful argument feedback, refreshed draft state, compact context, sanitized reports/CLI and a reviewed nine-scenario baseline. Mocked-provider/PostgreSQL verification; live-model quality and production observability remain unverified. |
-| 8 — Backend Deployment & Production Readiness | Complete (local preparation) | Validated settings/secrets, lightweight non-root image, transactional locked release migrations, restricted runtime role, single-operator bearer authentication, CORS/Host/input limits, readiness and JSON logs; production Compose and Render/Neon configuration. No cloud deployment or live-provider verification. |
+| 8 — Backend Deployment & Production Readiness | Complete (locally verified) | Validated settings/secrets, non-root image, guarded release migrations, restricted runtime role, operator authentication, request/provider limits, readiness and JSON logs. Exact-image local TLS/PostgreSQL/HTTP smoke and outage recovery passed; cloud deployment and live-provider verification remain external gates. |
 
 The 2026-10-31 closure audit passed all 772 tests without skips or warnings.
 "Live-verified" refers only to explicitly
@@ -74,6 +74,7 @@ production request/draft limits, runtime observability and production readiness.
 - [x] Prepare manual Render Free + Neon configuration, release/recovery instructions and separate environment templates without deploying.
 - [x] Review ownership/authentication; bound API/chat rates, concurrent chats, provider context/output/tokens and cooperative execution time; preserve transactional retries.
 - [x] Add read-only deployment smoke checks and require hostname-verified database TLS, usable secrets and a single worker.
+- [x] Build the exact runtime source and verify production startup, TLS, release jobs, restricted-role HTTP smoke, isolation, failure rollback, rate limiting, database recovery and shutdown on disposable infrastructure.
 
 The 2026-11-07 audit passed 403 focused tests with no skips, and the offline CLI
 matched the nine-scenario baseline. The image built and passed offline non-root
@@ -84,8 +85,17 @@ Free-tier hosting and single-operator access do not establish public multi-user 
 The follow-up verified graceful SIGTERM and database outage recovery, added safe
 startup failures/TCP safeguards and closed the stalled-body deadline gap.
 Use [the deployment gate](DEPLOYMENT_CHECKLIST.md) before any approved deployment.
-The 2026-11-08 follow-up passed 455 focused tests without skips; cloud verification
-and rebuilding the exact release image remain deployment gates.
+The 2026-11-08 hardening passed 455 focused tests without skips. Final closure
+fixed invalid smoke configuration handling (16 smoke cases) and passed 70 targeted
+checks without skips. The image built from Git commit `d615e91` passed real local
+HTTP smoke against a new TLS PostgreSQL container, including hostname mismatch
+rejection, repeated release migrations, restricted role, rollback, 429, readiness
+recovery and graceful shutdown. No demo data, cloud resources or live LLM calls
+were used. Final documentation is committed separately from runtime code.
+
+All local M8 acceptance criteria are satisfied for the existing single-operator
+scope. Cloud DNS/HTTPS, target-role grants/quotas, backup restore, provider behavior
+and monitoring activation remain pending external verification, not completed work.
 
 ## Remaining backend priorities
 

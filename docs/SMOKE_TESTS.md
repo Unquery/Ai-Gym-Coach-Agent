@@ -21,3 +21,10 @@ socket phase timeouts, bounded response reads and no redirects/proxy environment
 Cold starts can fail the check; rerun after the service becomes ready. This is a
 smoke check, not a hard overall deadline or a substitute for deployment approval.
 Only loopback origins may use HTTP for local verification.
+Malformed URLs/ports and control characters in URLs/tokens are rejected before
+opening a connection, with exit 2 and no raw input or traceback.
+
+M8 local closure ran this CLI inside the exact production image over actual TCP
+HTTP with restricted-role, hostname-verified TLS PostgreSQL: all six checks passed,
+including after database stop/start without restarting the API. This validates
+the workflow locally; it has not been run against a deployed cloud endpoint.

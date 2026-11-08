@@ -7,9 +7,10 @@ Agent Reliability & Evaluation** adds safe provider/tool failure handling,
 bounded-context checks, refreshed draft snapshots, compact tool context, and
 offline evaluation reports with a reviewed regression baseline. Migration head
 remains `0008` (11 tables). **Milestone 8 — Backend Deployment & Production
-Readiness** is complete for local preparation: validated production settings,
+Readiness** is complete for locally verified preparation: validated production settings,
 a non-root Docker image, guarded migrations, single-operator bearer access,
-readiness and sanitized JSON logs. Cloud deployment and verification remain
+readiness and sanitized JSON logs, with exact-image local TLS/PostgreSQL/HTTP
+release verification. Cloud deployment and verification remain
 pending; planning tools and public multi-user authentication remain future work.
 
 See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
@@ -848,6 +849,15 @@ Production now requires hostname-verified database TLS and a single worker. Run
 the read-only [deployment smoke workflow](docs/SMOKE_TESTS.md) after an approved
 deployment; [the checklist](docs/DEPLOYMENT_CHECKLIST.md) retains all cloud gates.
 No image rebuild, cloud deployment or live LLM call ran in this follow-up.
+
+Final M8 closure built the runtime from Git commit `d615e91` and verified the
+read-only production image against disposable TLS PostgreSQL. Release migrations,
+restricted role permissions, all six real HTTP smoke checks, ownership, failure
+rollback, 429, database outage recovery and graceful shutdown passed. Smoke CLI
+configuration failures are sanitized; 70 final targeted tests passed without
+skips. Demo data and live providers were not used. All local M8 criteria are met;
+cloud TLS/routing, target permissions/quotas, backup restore and monitoring
+activation remain [external deployment gates](docs/DEPLOYMENT_CHECKLIST.md).
 
 ## Test
 

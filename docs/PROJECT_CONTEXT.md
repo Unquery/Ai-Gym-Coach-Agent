@@ -429,6 +429,21 @@ LLM calls. Final targeted regression: 455 passed, no skips; no full-suite run,
 image rebuild, deployed-target smoke, cloud deployment or live-provider calls.
 See [SMOKE_TESTS.md](SMOKE_TESTS.md) and [SECURITY.md](SECURITY.md).
 
+Final M8 local acceptance is verified. The release image was built from Git
+commit `d615e91`, excluding uncommitted workspace changes. A new internal-only
+Docker network with disposable TLS PostgreSQL verified repeated image-based
+release migrations, restricted runtime DML, denied DDL/revision writes, actual
+encrypted connections and rejection of a mismatched server hostname. The exact
+production image passed all six smoke checks over real local HTTP, ownership,
+provider-unavailable rollback/retry and 429 checks. Database stop/start restored
+readiness 200 -> 503 -> 200 through the running API with committed data intact;
+logs remained sanitized and SIGTERM exited 0. Smoke configuration failures now
+exit 2 without raw input/tracebacks (16 smoke cases); final targeted verification
+passed 70 tests without skips. One-off verification artifacts remain local.
+No demo database, cloud deployment, real provider or paid service was used.
+Cloud-specific gates remain in DEPLOYMENT_CHECKLIST.md; local completion does
+not establish public multi-user or target-cloud production readiness.
+
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.
 - AI workout persistence requires a separate explicit human confirmation of the reviewed proposal; draft preparation/edit requests never grant that consent.

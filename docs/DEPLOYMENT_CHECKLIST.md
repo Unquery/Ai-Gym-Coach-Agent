@@ -1,6 +1,6 @@
 # Deployment gate
 
-Preparation only; no cloud deployment or paid/live-provider check has run.
+Local release verification is complete; no cloud deployment or live-provider check has run.
 Use the full [release instructions](DEPLOYMENT.md), [operations](OPERATIONS.md)
 and [security boundary](SECURITY.md) when deployment is explicitly authorized.
 
@@ -15,7 +15,11 @@ and [security boundary](SECURITY.md) when deployment is explicitly authorized.
   and workouts. Shared API/chat budgets, two chat slots, prompt/output/token limits
   and cooperative time budgets preserve rollback and retry safety.
 - [x] Production requires hostname-verified DB TLS and usable secrets; the entrypoint
-  forces one worker. Read-only [smoke checks](SMOKE_TESTS.md) have offline HTTP tests.
+  forces one worker. Read-only [smoke checks](SMOKE_TESTS.md) passed mocks and real
+  local HTTP with restricted-role PostgreSQL and hostname-verified TLS.
+- [x] Image built from exact runtime commit `d615e91` passed UID 10001, read-only
+  filesystem, excluded development artifacts, guarded release jobs, runtime DML,
+  denied DDL/revision writes, owner isolation, failed-provider rollback and 429 checks.
 - [x] Release migrations have separate secrets, a transaction lock and rollback;
   runtime cannot run DDL or change the Alembic revision.
 - [x] Stale checkout, interrupted transaction and SQL timeout tests pass. A disposable
@@ -26,7 +30,8 @@ and [security boundary](SECURITY.md) when deployment is explicitly authorized.
 ## Required before admitting cloud traffic
 
 - [ ] Approve deployment of an exact commit; recheck Render/Neon quotas and billing.
-- [ ] Rebuild/test that exact image; the previous image checks predate this follow-up.
+- [ ] Select the reviewed image for the release commit; rebuild/reverify if runtime
+  source, dependencies, base images or deployment settings change.
 - [ ] Provision synthetic-only PostgreSQL; verify backup and restore outside production.
 - [ ] Set separate migrator/runtime credentials, hostname-verified TLS, a fresh owner
   UUID and random operator token; keep all credentials out of Git/public clients.
@@ -42,9 +47,15 @@ and [security boundary](SECURITY.md) when deployment is explicitly authorized.
   review the proposal and explicitly confirm persistence, then verify replay safety.
 - [ ] Verify monitoring/budget limits and a schema-compatible application rollback.
 
-The 2026-11-08 follow-up passed 455 focused regression tests without skips,
-including offline evaluations and real isolated PostgreSQL tests. No image rebuild,
-cloud deployment, deployed-target smoke check or live LLM call ran in this follow-up.
+Evidence: the 2026-11-08 hardening passed 455 focused tests; final closure passed
+70 targeted tests without skips and built `ai-gym-coach:verify-d615e91` (image ID
+`sha256:7fb3450c1e18a41494306b6eb8fc3f50c888168da101c7ecfa209c559448afe9`).
+On a new internal Docker network, TLS PostgreSQL and the read-only production
+image passed all six smoke checks, readiness 200 -> 503 -> 200 without API restart,
+retained committed synthetic data, sanitized JSON logs and graceful exit 0.
+Temporary containers/volumes/network were removed. No demo DB, cloud deployment,
+target-cloud smoke or live LLM calls were involved. Local TLS does not verify
+the cloud certificate, CA bundle, DNS, routing or account permissions.
 
 Open limits: single trusted operator only; no public multi-user authentication,
 hard overall cancellation, persisted-draft bound or external alerting. Socket timeouts
