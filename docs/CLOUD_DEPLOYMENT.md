@@ -76,6 +76,25 @@ only via local ignored files or each provider's secret UI; do not paste secrets
 into chat or command arguments. Keep CORS empty until a specific HTTPS client is
 approved. Include the actual Render hostname plus `localhost,127.0.0.1` for probes.
 
+Validate each profile in a clean shell with only its own secret file loaded:
+
+```powershell
+uv run --env-file .local/m9-runtime.env --locked python -m app.preflight runtime
+uv run --env-file .local/m9-migration.env --locked python -m app.preflight migration
+```
+
+These commands make no network requests. They reuse production settings validation
+and check the selected direct Neon role/TLS profile, exact Groq model/endpoint,
+Render hosts, initial admission limits and absence of unrelated credentials.
+Use chat=2/min and API=60/min in the M9 runtime file, matching `render.yaml`;
+generic deployment templates retain the earlier 10/120 defaults. A shell that
+already loaded development/test/admin secrets fails separation checks: start a
+clean shell instead of copying all development variables into the release job.
+Exit 0 means offline configuration only; 1 means configuration failure; invalid
+CLI usage exits 2. Output never contains secret values or validation tracebacks.
+The CA path is checked for presence in the URL, not opened or verified locally;
+the production image and target TLS handshake must verify the actual CA file.
+
 Account access is the next external prerequisite: select the Render workspace,
 Neon organization/project and Groq organization; inspect plan/quota, model access
 and existing resources read-only before proposing creation. Render and Neon
