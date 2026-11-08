@@ -4,8 +4,13 @@ from collections.abc import Sequence
 import json
 from time import monotonic
 
-from httpx2 import Client, HTTPError, TimeoutException
-from openai import APIConnectionError, APITimeoutError, OpenAI, omit
+from httpx2 import Client, HTTPError, Response, TimeoutException
+from openai import (
+    APIConnectionError, APIStatusError, APITimeoutError, AuthenticationError,
+    BadRequestError, ConflictError, DefaultHttpx2Client, InternalServerError,
+    NotFoundError, OpenAI, PermissionDeniedError, RateLimitError,
+    UnprocessableEntityError, omit,
+)
 from openai.types.chat import (
     ChatCompletion,
     ChatCompletionMessageParam,
@@ -23,10 +28,27 @@ class LLMResponseLimitError(ValueError):
     """Provider input/output exceeds the backend's bounded processing budget."""
 
 
+def _reject_provider_error(response: Response) -> None:
+    """The SDK otherwise reads error bodies eagerly, outside our bounded reader."""
+    if response.status_code < 300:
+        return
+    response.close()
+    errors = {
+        400: BadRequestError, 401: AuthenticationError, 403: PermissionDeniedError,
+        404: NotFoundError, 409: ConflictError, 422: UnprocessableEntityError, 429: RateLimitError,
+    }
+    error = errors.get(response.status_code, InternalServerError if response.status_code >= 500 else APIStatusError)
+    raise error("LLM provider request failed", response=response, body=None)
+
+
 def create_llm_client(
     settings: LLMSettings, *, http_client: Client | None = None
 ) -> OpenAI:
     """Create a client without sending requests; the caller owns its lifetime."""
+    if http_client is None:
+        http_client = DefaultHttpx2Client(follow_redirects=False, trust_env=False)
+    if _reject_provider_error not in http_client.event_hooks["response"]:
+        http_client.event_hooks["response"].append(_reject_provider_error)
     return OpenAI(
         base_url=str(settings.base_url),
         api_key=settings.api_key.get_secret_value(),

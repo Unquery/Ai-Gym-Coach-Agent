@@ -463,6 +463,7 @@ Historical proposal JSON is context, never current consent or execution state.
 Intermediate tool calls/results stay within the current run; chat does not
 automatically persist them or rebuild a historical tool protocol. Streaming is deferred.
 These character limits bound history, not the complete prompt/current draft size.
+The provider adapter separately caps serialized context at 64 KiB.
 
 Optional UUID header `Idempotency-Key` binds the server-selected owner and endpoint
 to the raw parsed JSON before trimming/defaults. Replaying a completed request
@@ -482,9 +483,10 @@ Provider authentication errors are 502, since they concern server credentials.
 Invalid request bodies retain FastAPI's standard 422 validation response.
 Missing/foreign conversations return 404. Invalid/duplicate idempotency headers
 return 422; retry conflicts use the structured 409 codes above.
-The existing SDK timeout is 30 seconds with no automatic retries. It is a network
-timeout, not an overall deadline for the bounded agent conversation (up to three
-LLM calls). No background worker continues after an HTTP timeout response.
+The agent shares a 60-second cooperative budget across up to three LLM calls and
+tools; socket phase timeouts use at most 30 seconds or the remaining budget. This
+is not hard cancellation of synchronous I/O. No automatic retry or detached worker
+continues after an HTTP timeout response. See [security limits](docs/SECURITY.md).
 
 Start with database and LLM configuration loaded, using the existing server command:
 
@@ -827,9 +829,10 @@ controls, with a 48-test targeted rerun after final fixes. The final CLI matched
 No full-suite rerun or live Groq calls were made. These checks verify scripted
 integration/safety, not real-model interpretation or language quality. Compact JSON
 preserves unknown values and reduces context characters; actual provider-token
-savings have not been measured. Live-model evaluation, an overall agent deadline,
-production prompt/draft bounds and broader metrics/alerting remain future work.
-Milestone 8 adds HTTP request limits, readiness and sanitized runtime logs.
+savings have not been measured. Live-model evaluation, hard overall cancellation,
+persisted-draft bounds and broader metrics/alerting remain future work.
+Milestone 8 adds HTTP/provider size limits, API/chat budgets, two concurrent chats,
+a cooperative agent budget, readiness and sanitized runtime logs.
 
 The 2026-11-07 Milestone 8 audit passed 403 focused tests without skips and reran
 the offline CLI: 9/9 tasks, 100% tool accuracy, zero safety violations and no
@@ -838,6 +841,13 @@ network-disabled runtime checks. Disposable PostgreSQL verification confirmed
 repeatable migrations, runtime DML, denied DDL/revision writes and readiness
 rejection of elevated role membership/bypass-RLS. Cloud TLS/routing, backup
 restore and live-provider behavior were not verified; no deployment was run.
+
+The 2026-11-08 production follow-up passed 455 focused tests without skips,
+including ownership, rollback/idempotency, offline evaluations and configuration.
+Production now requires hostname-verified database TLS and a single worker. Run
+the read-only [deployment smoke workflow](docs/SMOKE_TESTS.md) after an approved
+deployment; [the checklist](docs/DEPLOYMENT_CHECKLIST.md) retains all cloud gates.
+No image rebuild, cloud deployment or live LLM call ran in this follow-up.
 
 ## Test
 

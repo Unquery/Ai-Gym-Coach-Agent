@@ -4,7 +4,7 @@ import os
 
 import httpx2
 import pytest
-from openai import APITimeoutError, AuthenticationError, DefaultHttpx2Client, RateLimitError
+from openai import APITimeoutError, AuthenticationError, DefaultHttpx2Client, InternalServerError, RateLimitError
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import ValidationError
 
@@ -245,17 +245,26 @@ def test_oversized_prompt_is_rejected_before_network(llm_environment: None) -> N
 
 
 @pytest.mark.parametrize(
-    "status, error_type", [(401, AuthenticationError), (429, RateLimitError)]
+    "status, error_type", [(401, AuthenticationError), (429, RateLimitError), (503, InternalServerError)]
 )
 def test_provider_errors_propagate_without_retrying(
     llm_environment: None, status: int, error_type: type[Exception]
 ) -> None:
     settings = load_llm_settings()
     requests: list[httpx2.Request] = []
+    closed = []
+
+    class UnreadableBody(httpx2.SyncByteStream):
+        def __iter__(self):
+            raise AssertionError("Provider error bodies must never be read")
+            yield b""
+
+        def close(self):
+            closed.append(True)
 
     def respond(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
-        return httpx2.Response(status, json={"error": {"message": "Synthetic failure"}})
+        return httpx2.Response(status, stream=UnreadableBody())
 
     transport = DefaultHttpx2Client(transport=httpx2.MockTransport(respond))
     with create_llm_client(settings, http_client=transport) as client:
@@ -264,3 +273,4 @@ def test_provider_errors_propagate_without_retrying(
                 client, settings, [{"role": "user", "content": "Hello"}]
             )
     assert len(requests) == 1
+    assert closed == [True]

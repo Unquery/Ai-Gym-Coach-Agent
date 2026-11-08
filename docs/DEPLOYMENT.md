@@ -104,5 +104,5 @@ usage using [OPERATIONS.md](OPERATIONS.md).
 Cloud DNS/TLS, the provider's exact grants/limits, account quota, backup restore,
 HTTPS routing and real cloud HTTP/provider behavior remain unverified. Free-tier
 hosting does not establish production reliability. Public multi-user access,
-planning tools, overall agent deadlines and persisted-draft bounds remain outside
+planning tools, hard overall cancellation and persisted-draft bounds remain outside
 this milestone; see [SECURITY.md](SECURITY.md).

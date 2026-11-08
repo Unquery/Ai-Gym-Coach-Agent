@@ -9,6 +9,9 @@ On SIGTERM, Uvicorn drains requests for up to 100 seconds and completes ASGI
 shutdown, then the entrypoint disposes any existing database pool. Keep the
 platform/container shutdown allowance at 120 seconds. Migration execution stays
 an explicit prior release step, never part of application startup.
+The entrypoint forces one worker even with `WEB_CONCURRENCY` set. Keep one replica:
+API/chat rate budgets and the two-chat admission limit are process-local. See
+[security limits](SECURITY.md) and [read-only deployment smoke checks](SMOKE_TESTS.md).
 
 - `GET /health`: process liveness, no database/provider dependency.
 - `GET /ready`: PostgreSQL reachable and Alembic revision matches the packaged

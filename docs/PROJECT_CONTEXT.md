@@ -43,7 +43,7 @@ agent reliability/evaluation and Milestone 8 covers local deployment preparation
 not cloud verification or public multi-user readiness. Remaining priorities:
 
 1. Add workout planning and plan-retrieval tools; retain explicit human confirmation for AI-proposed workout writes.
-2. Add public multi-user authentication, broader security/live-model evaluations, overall agent deadlines, persisted-draft bounds and external metrics/alerting. Preserve existing safety tests.
+2. Add public multi-user authentication, broader security/live-model evaluations, hard overall cancellation, persisted-draft bounds and external metrics/alerting. Preserve existing safety tests.
 3. Perform a separately approved cloud deployment and verify the complete backend MVP end to end.
 4. Only after backend MVP verification, start frontend development, preferably an Android application using Kotlin and Jetpack Compose.
 
@@ -331,8 +331,9 @@ configuration/infrastructure/incompatibility, and interruption respectively.
 An opt-in live runner exists with request/token/size budgets, but no Milestone 7
 live Groq verification was performed. Offline scores do not measure real-model
 language understanding, and zero offline tokens are not measured token savings.
-An overall runtime deadline, production prompt/draft-size limits and
-external metrics/alerting remain future work; Milestone 8 adds runtime JSON logs.
+Milestone 8 adds runtime JSON logs, provider prompt/output limits and a cooperative
+agent time budget. Hard overall cancellation, persisted-draft storage bounds and
+external metrics/alerting remain future work.
 
 ## Verification status
 
@@ -376,8 +377,8 @@ operator authentication, deployment roles, containerization and runtime logs bel
 public multi-user access, broader live evaluation, planning tools, public draft
 management and local Ollama live verification remain future work. Migrations were
 tested in isolated databases/schemas; no demo upgrade is implied.
-History character bounds do not cap the whole prompt or current draft; overall
-agent deadlines and persisted-draft/whole-prompt bounds remain future hardening.
+History character bounds are separate from the provider's 64-KiB context limit.
+Hard overall cancellation and persisted-draft storage bounds remain future hardening.
 
 ## Milestone 8 deployment preparation
 
@@ -413,6 +414,20 @@ and retained committed data. Interrupted writes roll back and stale connections
 are replaced. Incomplete/trickled HTTP bodies have a total 10-second deadline
 before business execution. See [the deployment gate](DEPLOYMENT_CHECKLIST.md) for
 local verification and remaining cloud requirements; no deployment is implied.
+
+The 2026-11-08 follow-up verified ownership without code changes, added shared
+API rate limits (120/minute, chat 10/minute), two concurrent production chat slots,
+64-KiB provider context, 128-KiB decoded successful responses and 1024 completion
+tokens per call. Provider error bodies are closed unread. A shared 60-second agent
+budget is checked between synchronous operations, with remaining-budget socket
+timeouts capped at 30 seconds. It is not forcible cancellation of DNS/SQL/socket
+or commit operations. Failures roll back before returning; no detached worker is
+abandoned after an HTTP timeout. Production requires `sslmode=verify-full`, rejects
+unusable/placeholder secrets and explicitly starts one worker. The read-only
+`python -m app.smoke` workflow checks liveness, DB readiness, auth and reads without
+LLM calls. Final targeted regression: 455 passed, no skips; no full-suite run,
+image rebuild, deployed-target smoke, cloud deployment or live-provider calls.
+See [SMOKE_TESTS.md](SMOKE_TESTS.md) and [SECURITY.md](SECURITY.md).
 
 ## Core boundaries
 - Database and deterministic fitness calculations are authoritative; LLM interprets requests and selects narrow tools.

@@ -15,11 +15,13 @@ restarting the single API instance. Do not use real private workout data for a
 portfolio demonstration. Restarting revokes the old token. No token is stored in
 the database, responses or application logs.
 
-`APP_ENV=production` rejects demo identity, placeholder/short bearer tokens,
+`APP_ENV=production` rejects demo identity, placeholder/short/non-ASCII or whitespace-bearing tokens,
 the synthetic owner, insecure database/provider URLs, wildcard hosts/origins and
 debug logging. Interactive docs and OpenAPI are disabled. Local synthetic access
 requires both development mode and explicit `ENABLE_DEMO_AUTH=true`; local
 Compose binds the backend only to loopback. Never publish the development profile.
+Runtime and release database URLs require `sslmode=verify-full` and a trusted CA
+configuration. Provider URLs require HTTPS without credentials, query or fragment.
 
 TLS terminates at the hosting platform's HTTPS edge; expose no direct HTTP service
 to the public internet. Forwarded headers are not trusted by the application.
@@ -33,11 +35,27 @@ returns 408 and closes the connection before business execution. Chat messages a
 retain their 4,000-character schema limit. Validation responses omit supplied
 values, unknown field names and exception context. Database/unexpected failures
 return generic 503/500 responses. The server admits at most 16 concurrent HTTP
-requests; authenticated production chat is limited to 10 requests per rolling
-minute. These are conservative single-process limits, reset on restart. Do not
+requests; authenticated production traffic is limited to 120 requests per rolling
+minute, with a separate 10-request chat budget. Configure these via
+`API_REQUESTS_PER_MINUTE` and `CHAT_REQUESTS_PER_MINUTE`; rejected requests return
+429 and `Retry-After`. At most two production chats execute concurrently; excess
+requests receive 503 before opening a DB session. These conservative in-memory
+limits reset on restart. The production entrypoint explicitly uses one worker,
+including when `WEB_CONCURRENCY` is present. Do not
 scale replicas/workers without an edge/shared rate limiter and budget controls.
-Unbounded persisted draft size and an overall agent deadline remain follow-ups;
-the existing agent still has bounded turns/tools, per-call timeout and no retries.
+
+Provider messages/tool schemas are limited to 64 KiB of serialized UTF-8 context;
+successful decoded response bodies to 128 KiB and generation to 1024 completion
+tokens per call. Truncated/oversized results fail without committing the turn.
+Provider error/redirect responses close without reading their bodies. Default
+provider transport disables redirects and proxy environment settings.
+The agent checks a shared 60-second budget between calls, reads and tools; each
+new provider operation uses at most the remaining budget or 30 seconds for socket
+phase timeouts. Expiration returns 504 and rolls back the turn; no background
+thread continues after that response. This is cooperative, not a hard wall-clock
+deadline: synchronous DNS/socket/SQL/commit operations can exceed the budget before
+control returns. Persisted-draft storage bounds and forcible overall cancellation
+remain follow-ups. Bounded turns/tools and zero automatic retries are retained.
 
 `/health` and `/ready` are intentionally unauthenticated, return only status and
 never call an LLM. Use a separate restricted runtime DB role; see

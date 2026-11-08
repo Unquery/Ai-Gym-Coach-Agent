@@ -72,6 +72,8 @@ production request/draft limits, runtime observability and production readiness.
 - [x] Require single-operator bearer authentication, preserve owner checks and harden CORS/Host/input/error boundaries.
 - [x] Add migration-aware readiness, role checks and sanitized structured logging.
 - [x] Prepare manual Render Free + Neon configuration, release/recovery instructions and separate environment templates without deploying.
+- [x] Review ownership/authentication; bound API/chat rates, concurrent chats, provider context/output/tokens and cooperative execution time; preserve transactional retries.
+- [x] Add read-only deployment smoke checks and require hostname-verified database TLS, usable secrets and a single worker.
 
 The 2026-11-07 audit passed 403 focused tests with no skips, and the offline CLI
 matched the nine-scenario baseline. The image built and passed offline non-root
@@ -82,13 +84,15 @@ Free-tier hosting and single-operator access do not establish public multi-user 
 The follow-up verified graceful SIGTERM and database outage recovery, added safe
 startup failures/TCP safeguards and closed the stalled-body deadline gap.
 Use [the deployment gate](DEPLOYMENT_CHECKLIST.md) before any approved deployment.
+The 2026-11-08 follow-up passed 455 focused tests without skips; cloud verification
+and rebuilding the exact release image remain deployment gates.
 
 ## Remaining backend priorities
 
 Workout planning and plan-retrieval tools remain planned despite the existing
 plan tables. Exercise-name lookup for progress and automatic relative-date context
 are not implemented. Public multi-user authentication, broader security
-hardening, live-model evaluations, overall agent deadlines, persisted-draft bounds
+hardening, live-model evaluations, hard overall cancellation, persisted-draft bounds
 and external metrics/alerting remain future work;
 existing validation, owner filtering, and mocked safety tests already exist.
 
