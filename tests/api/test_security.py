@@ -10,7 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.application import create_app
-from app.api.security import RequestBodyLimit
+from app.api.security import RequestBodyLimit, admit_chat
 from app.config import AppSettings
 from app.db.models import Workout
 from app.db.session import get_session
@@ -127,6 +127,38 @@ def test_api_limit_is_shared_expires_and_rejects_before_database_access(
         clock[0] += 0.5
         secured_app.dependency_overrides[get_session] = lambda: None
         assert client.post("/agent/chat", headers=headers, json={}).status_code == 422
+
+
+def test_chat_capacity_rejects_before_database_and_releases_on_failure(secured_app) -> None:
+    from starlette.requests import Request
+
+    request = Request({"type": "http", "app": secured_app})
+    first, second = admit_chat(request), admit_chat(request)
+    next(first)
+    next(second)
+
+    def forbidden_database():
+        raise AssertionError("Busy chat opened a database session")
+
+    secured_app.dependency_overrides[get_session] = forbidden_database
+    try:
+        with TestClient(secured_app) as client:
+            response = client.post("/agent/chat", json={"message": "Hello"}, headers={
+                "Authorization": "Bearer " + TOKEN,
+            })
+            assert response.status_code == 503 and response.headers["retry-after"] == "1"
+            assert client.get("/health").status_code == 200
+    finally:
+        first.close()
+        second.close()
+    slot = admit_chat(request)
+    next(slot)
+    with pytest.raises(RuntimeError, match="synthetic failure"):
+        slot.throw(RuntimeError("synthetic failure"))
+    assert secured_app.state.chat_slots.acquire(blocking=False)
+    assert secured_app.state.chat_slots.acquire(blocking=False)
+    secured_app.state.chat_slots.release()
+    secured_app.state.chat_slots.release()
 
 
 @pytest.mark.parametrize("trickle", [False, True])

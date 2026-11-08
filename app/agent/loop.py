@@ -1,6 +1,7 @@
 """Bounded agent workflows with server-selected ownership and human review of proposals."""
 
 import json
+from time import monotonic
 from collections.abc import Sequence
 from uuid import UUID
 
@@ -15,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.conversations.history import MAX_HISTORY_ROWS, select_recent_text_turns
-from app.llm.client import create_chat_completion
+from app.llm.client import LLMResponseLimitError, create_chat_completion
 from app.llm.config import LLMSettings
 from app.agent.dispatch import (
     InvalidToolArgumentsError, UnknownToolError, execute_agent_tool, execute_read_only_tool,
@@ -29,6 +30,7 @@ from app.workouts.proposals import DRAFT_TOOL_NAME
 
 MAX_LLM_TURNS = 3
 MAX_TOOL_CALLS = 2
+MAX_AGENT_SECONDS = 60
 
 SYSTEM_PROMPT = (
     "You are AI Gym Coach. Reply in the user's language. "
@@ -164,6 +166,7 @@ def _run_agent(
     history: Sequence[tuple[int, str, str | None]] = (),
     draft_context: DraftMutationContext | None = None,
 ) -> str | WorkoutProposalToolResult:
+    deadline = monotonic() + MAX_AGENT_SECONDS
     text_history = select_recent_text_turns(history[-MAX_HISTORY_ROWS:])
     historical_messages: list[ChatCompletionMessageParam] = []
     for index in range(0, len(text_history), 2):
@@ -201,12 +204,14 @@ def _run_agent(
 
     for turn in range(MAX_LLM_TURNS):
         try:
-            completion = create_chat_completion(client, settings, messages, tools=tools)
+            completion = create_chat_completion(client, settings, messages, tools=tools, deadline=deadline)
+            if monotonic() >= deadline:
+                raise TimeoutError("Agent deadline exceeded")
             if not isinstance(completion, ChatCompletion):
                 raise AgentError("The model returned an invalid response")
             # SDK construction is permissive; revalidate nested data before any tool.
             completion = ChatCompletion.model_validate(completion.model_dump(warnings=False))
-        except (ValidationError, json.JSONDecodeError, UnicodeDecodeError):
+        except (ValidationError, json.JSONDecodeError, UnicodeDecodeError, LLMResponseLimitError):
             raise AgentError("The model returned an invalid response") from None
         if not completion.choices:
             raise AgentError("The model returned no response")
@@ -270,6 +275,8 @@ def _run_agent(
             }
         )
         for call in assistant_calls:
+            if monotonic() >= deadline:
+                raise TimeoutError("Agent deadline exceeded")
             tool_call_count += 1
             try:
                 context_arguments = (
@@ -315,6 +322,8 @@ def _run_agent(
                     )}
                 elif isinstance(result, DraftMutationToolResult):
                     blocked_mutation_result = result
+                if monotonic() >= deadline:
+                    raise TimeoutError("Agent deadline exceeded")
                 if isinstance(result, WorkoutProposalToolResult):
                     return result
                 payload = (
@@ -336,6 +345,8 @@ def _run_agent(
                 }})
             except UnknownToolError:
                 content = json.dumps({"error": {"code": "unknown_tool"}})
+            except TimeoutError:
+                raise
             except SQLAlchemyError:
                 raise AgentError(
                     "Workout data could not be processed" if allow_proposals

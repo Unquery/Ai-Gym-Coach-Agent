@@ -4,7 +4,7 @@ from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import logging
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from typing import Annotated
 from uuid import UUID
 
@@ -22,7 +22,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.agent.loop import AgentError, run_agent
 from app.config import AppSettings, load_settings
-from app.api.security import RequestBodyLimit, get_current_user_id
+from app.api.security import RequestBodyLimit, admit_chat, get_current_user_id
 from app.agent.tools import DraftMutationContext
 from app.api.schemas import (
     AgentAnswerResponse,
@@ -181,6 +181,7 @@ def _run_chat_turn(
 @router.post("/agent/chat", response_model=AgentChatResponse)
 def agent_chat(
     payload: AgentChatRequest,
+    admission: Annotated[None, Depends(admit_chat)],
     session: Annotated[Session, Depends(get_session)],
     user_id: Annotated[UUID, Depends(get_current_user_id)],
     idempotency: Annotated[tuple[UUID, str] | None, Depends(get_chat_idempotency)],
@@ -228,7 +229,7 @@ def agent_chat(
         raise HTTPException(status_code=503, detail="AI service is unavailable") from None
     except ConversationNotFoundError:
         raise HTTPException(status_code=404, detail="Conversation not found") from None
-    except APITimeoutError:
+    except (APITimeoutError, TimeoutError):
         raise HTTPException(status_code=504, detail="AI service timed out") from None
     except RateLimitError:
         raise HTTPException(status_code=503, detail="AI service is unavailable") from None
@@ -474,6 +475,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     )
     application.state.settings = settings
     application.state.rate_limits = ({"api": deque(), "chat": deque()}, Lock())
+    application.state.chat_slots = BoundedSemaphore(2)
     application.include_router(public_routes)
     application.include_router(router)
     application.add_middleware(RequestBodyLimit, max_bytes=settings.max_request_bytes)

@@ -336,10 +336,10 @@ def test_draft_tools_require_durable_request_and_active_draft(
 
 
 @pytest.mark.postgres
-@pytest.mark.parametrize("failure", ["provider", "timeout", "invalid_json", "non_object", "malformed", "incomplete", "tool_limit"])
+@pytest.mark.parametrize("failure", ["provider", "timeout", "deadline", "oversized", "invalid_json", "non_object", "malformed", "incomplete", "tool_limit"])
 def test_append_rolls_back_on_provider_failure_and_retries_with_same_identity(
     postgres_engine: Engine, postgres_chat: tuple[ChatContext, int, UUID], active_chat_draft: UUID,
-    failure: str,
+    failure: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (api, requests, responses, _), _, owner = postgres_chat
     headers = {"Idempotency-Key": str(uuid4())}
@@ -353,6 +353,19 @@ def test_append_rolls_back_on_provider_failure_and_retries_with_same_identity(
         failed_response = httpx2.ReadTimeout(SENSITIVE_DETAIL)
     elif failure == "invalid_json":
         failed_response = httpx2.Response(200, content=b"{", headers={"content-type": "application/json"})
+    elif failure == "oversized":
+        failed_response = httpx2.Response(200, content=b"x" * 131073)
+    elif failure == "deadline":
+        clock = [100.0]
+        monkeypatch.setattr("app.agent.loop.monotonic", lambda: clock[0])
+        monkeypatch.setattr("app.llm.client.monotonic", lambda: clock[0])
+
+        class SlowBody(httpx2.SyncByteStream):
+            def __iter__(self):
+                clock[0] += 61
+                yield b"{}"
+
+        failed_response = httpx2.Response(200, stream=SlowBody())
     elif failure == "non_object":
         failed_response = httpx2.Response(200, json="Not a completion")
     else:
@@ -371,7 +384,7 @@ def test_append_rolls_back_on_provider_failure_and_retries_with_same_identity(
         failed_response = httpx2.Response(200, json=reply)
     responses.extend([append, failed_response])
     failed = api.post("/agent/chat", headers=headers, json=body)
-    assert failed.status_code == (504 if failure == "timeout" else 502)
+    assert failed.status_code == (504 if failure in {"timeout", "deadline"} else 502)
     assert SENSITIVE_DETAIL not in failed.text and len(requests) == 2
     with Session(postgres_engine) as session:
         draft = get_workout_draft(active_chat_draft, session=session, user_id=owner)

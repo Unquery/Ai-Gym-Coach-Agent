@@ -1,6 +1,7 @@
 """Single-operator authentication and bounded HTTP input for the portfolio MVP."""
 
 from asyncio import timeout
+from collections.abc import Iterator
 from hmac import compare_digest
 from math import ceil
 from time import monotonic
@@ -42,6 +43,20 @@ def get_current_user_id(request: Request) -> UUID:
                         timestamps.append(now)
             return settings.api_owner_id
     raise HTTPException(401, "Authentication required", headers={"WWW-Authenticate": "Bearer"})
+
+
+def admit_chat(request: Request) -> Iterator[None]:
+    """Keep provider waits from occupying every HTTP/DB worker; never queue."""
+    if request.app.state.settings.environment != "production":
+        yield
+        return
+    slots = request.app.state.chat_slots
+    if not slots.acquire(blocking=False):
+        raise HTTPException(503, "AI service is busy", headers={"Retry-After": "1"})
+    try:
+        yield
+    finally:
+        slots.release()
 
 
 class RequestBodyLimit:

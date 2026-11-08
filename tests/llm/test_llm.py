@@ -4,11 +4,11 @@ import os
 
 import httpx2
 import pytest
-from openai import AuthenticationError, DefaultHttpx2Client, RateLimitError
+from openai import APITimeoutError, AuthenticationError, DefaultHttpx2Client, RateLimitError
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import ValidationError
 
-from app.llm.client import create_chat_completion, create_llm_client
+from app.llm.client import MAX_COMPLETION_TOKENS, LLMResponseLimitError, create_chat_completion, create_llm_client
 from app.llm.config import load_llm_settings, read_required_env
 from app.agent.tool_schemas import get_read_only_tool_schemas
 
@@ -144,7 +144,9 @@ def test_chat_completion_uses_configured_provider(
     assert requests[0].method == "POST"
     assert str(requests[0].url) == expected_url
     assert requests[0].headers["authorization"] == f"Bearer {key}"
-    assert json.loads(requests[0].content) == {"model": model, "messages": messages}
+    assert json.loads(requests[0].content) == {
+        "model": model, "messages": messages, "max_completion_tokens": MAX_COMPLETION_TOKENS,
+    }
     assert result.choices[0].message.content == "Synthetic reply"
     output = capsys.readouterr()
     assert key not in caplog.text + output.out + output.err
@@ -194,6 +196,52 @@ def test_chat_completion_preserves_tool_calls_without_executing_them(
     assert [
         call.model_dump(exclude_none=True) for call in message.tool_calls
     ] == tool_calls
+
+
+@pytest.mark.parametrize("failure", ["oversized", "trickle", "read_timeout"])
+def test_provider_stream_limits_close_the_response_without_retry(
+    llm_environment: None, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    clock = [100.0]
+    monkeypatch.setattr("app.llm.client.monotonic", lambda: clock[0])
+    monkeypatch.setattr("app.llm.client.MAX_RESPONSE_BYTES", 10)
+    closed = []
+    requests = []
+
+    class Body(httpx2.SyncByteStream):
+        def __iter__(self):
+            yield b"12345"
+            if failure == "read_timeout":
+                raise httpx2.ReadTimeout("synthetic-sensitive-timeout", request=requests[0])
+            if failure == "trickle":
+                clock[0] += 31
+            yield b"678901"
+
+        def close(self):
+            closed.append(True)
+
+    def respond(request):
+        requests.append(request)
+        return httpx2.Response(200, stream=Body())
+
+    expected = {"oversized": LLMResponseLimitError, "trickle": TimeoutError, "read_timeout": APITimeoutError}[failure]
+    with create_llm_client(load_llm_settings(), http_client=DefaultHttpx2Client(
+        transport=httpx2.MockTransport(respond),
+    )) as client:
+        with pytest.raises(expected):
+            create_chat_completion(client, load_llm_settings(), [{"role": "user", "content": "Hello"}])
+    assert len(requests) == 1 and closed == [True]
+
+
+def test_oversized_prompt_is_rejected_before_network(llm_environment: None) -> None:
+    def forbidden(request):
+        raise AssertionError("Oversized prompt reached the provider")
+
+    with create_llm_client(load_llm_settings(), http_client=DefaultHttpx2Client(
+        transport=httpx2.MockTransport(forbidden),
+    )) as client:
+        with pytest.raises(LLMResponseLimitError):
+            create_chat_completion(client, load_llm_settings(), [{"role": "user", "content": "x" * 65536}])
 
 
 @pytest.mark.parametrize(
