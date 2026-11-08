@@ -473,7 +473,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         openapi_url=None if production else "/openapi.json",
     )
     application.state.settings = settings
-    application.state.chat_rate_limit = (deque(), Lock())
+    application.state.rate_limits = ({"api": deque(), "chat": deque()}, Lock())
     application.include_router(public_routes)
     application.include_router(router)
     application.add_middleware(RequestBodyLimit, max_bytes=settings.max_request_bytes)
@@ -482,7 +482,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         CORSMiddleware, allow_origins=list(settings.cors_origins),
         allow_methods=["GET", "POST"],
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
-        expose_headers=["X-Request-ID"],
+        expose_headers=["X-Request-ID", "Retry-After"],
         allow_credentials=False,
     )
     application.add_middleware(RequestLogging, production=production)

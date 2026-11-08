@@ -100,6 +100,35 @@ def test_authenticated_chat_is_rate_limited_without_provider_calls(secured_app) 
         assert statuses == [422, 422, 429]
 
 
+def test_api_limit_is_shared_expires_and_rejects_before_database_access(
+    secured_app, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secured_app.state.settings = secured_app.state.settings.model_copy(update={
+        "api_requests_per_minute": 2,
+    })
+    clock = [100.0]
+    monkeypatch.setattr("app.api.security.monotonic", lambda: clock[0])
+    secured_app.dependency_overrides[get_session] = lambda: None
+    with TestClient(secured_app) as client:
+        assert client.get("/workouts").status_code == 401
+        headers = {"Authorization": "Bearer " + TOKEN}
+        assert client.post("/agent/chat", headers=headers, json={}).status_code == 422
+        assert client.post("/workouts", headers=headers, json={"user_id": str(uuid4())}).status_code == 422
+
+        def forbidden_database():
+            raise AssertionError("Rate-limited request opened a database session")
+
+        secured_app.dependency_overrides[get_session] = forbidden_database
+        response = client.get("/exercises", headers=headers)
+        assert response.status_code == 429 and response.headers["retry-after"] == "60"
+        assert client.get("/health").status_code == 200
+        clock[0] += 59.5
+        assert client.get("/workouts", headers=headers).headers["retry-after"] == "1"
+        clock[0] += 0.5
+        secured_app.dependency_overrides[get_session] = lambda: None
+        assert client.post("/agent/chat", headers=headers, json={}).status_code == 422
+
+
 @pytest.mark.parametrize("trickle", [False, True])
 def test_incomplete_body_has_total_deadline_before_business_execution(trickle: bool) -> None:
     async def check():

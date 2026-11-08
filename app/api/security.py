@@ -2,6 +2,7 @@
 
 from asyncio import timeout
 from hmac import compare_digest
+from math import ceil
 from time import monotonic
 from uuid import UUID
 
@@ -23,15 +24,22 @@ def get_current_user_id(request: Request) -> UUID:
         if scheme.lower() == "bearer" and compare_digest(
             token.encode("utf-8"), expected.get_secret_value().encode("utf-8"),
         ):
-            if settings.environment == "production" and request.url.path == "/agent/chat":
-                timestamps, lock = request.app.state.chat_rate_limit
-                now = monotonic()
+            if settings.environment == "production":
+                buckets, lock = request.app.state.rate_limits
                 with lock:
-                    while timestamps and timestamps[0] <= now - 60:
-                        timestamps.popleft()
-                    if len(timestamps) >= settings.chat_requests_per_minute:
-                        raise HTTPException(429, "Chat rate limit exceeded", headers={"Retry-After": "60"})
-                    timestamps.append(now)
+                    now = monotonic()
+                    limits = [(buckets["api"], settings.api_requests_per_minute)]
+                    if request.url.path == "/agent/chat":
+                        limits.append((buckets["chat"], settings.chat_requests_per_minute))
+                    for timestamps, limit in limits:
+                        while timestamps and timestamps[0] <= now - 60:
+                            timestamps.popleft()
+                        if len(timestamps) >= limit:
+                            raise HTTPException(429, "Request rate limit exceeded", headers={
+                                "Retry-After": str(max(1, ceil(timestamps[0] + 60 - now))),
+                            })
+                    for timestamps, _ in limits:
+                        timestamps.append(now)
             return settings.api_owner_id
     raise HTTPException(401, "Authentication required", headers={"WWW-Authenticate": "Bearer"})
 

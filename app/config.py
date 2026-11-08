@@ -47,6 +47,7 @@ class AppSettings(DatabaseSettings):
     cors_origins: tuple[str, ...] = ()
     max_request_bytes: int = Field(default=16384, ge=4096, le=1048576)
     chat_requests_per_minute: int = Field(default=10, ge=1, le=60)
+    api_requests_per_minute: int = Field(default=120, ge=1, le=600)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     @model_validator(mode="after")
