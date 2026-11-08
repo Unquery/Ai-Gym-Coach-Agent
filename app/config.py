@@ -31,11 +31,11 @@ def validate_production_database_url(value: str) -> None:
         if (
             url.drivername != "postgresql+psycopg" or not url.host or not url.database
             or not url.username or not url.password
-            or url.query.get("sslmode") not in {"require", "verify-ca", "verify-full"}
+            or url.query.get("sslmode") != "verify-full"
         ):
             raise ValueError
     except Exception:
-        raise ValueError("Production database URL requires PostgreSQL credentials and TLS") from None
+        raise ValueError("Production database URL requires PostgreSQL credentials and sslmode=verify-full") from None
 
 
 class AppSettings(DatabaseSettings):
@@ -58,6 +58,8 @@ class AppSettings(DatabaseSettings):
             raise ValueError("ALLOWED_HOSTS must contain hostnames without ports or schemes")
         for origin in self.cors_origins:
             parsed = urlsplit(origin)
+            # Accessing port also rejects malformed/out-of-range port strings.
+            parsed.port
             if (
                 parsed.scheme not in {"http", "https"} or not parsed.netloc
                 or parsed.username or parsed.password or parsed.path
@@ -70,7 +72,10 @@ class AppSettings(DatabaseSettings):
             if self.enable_demo_auth:
                 raise ValueError("Demo authentication is forbidden in production")
             token = self.api_auth_token.get_secret_value() if self.api_auth_token else ""
-            if len(token) < 32 or token.startswith("REPLACE_"):
+            if (
+                len(token) < 32 or token.upper().startswith("REPLACE_")
+                or not token.isascii() or any(char.isspace() or ord(char) < 33 or ord(char) == 127 for char in token)
+            ):
                 raise ValueError("Production requires a random API_AUTH_TOKEN of at least 32 characters")
             if self.api_owner_id is None or self.api_owner_id.int in {0, 1}:
                 raise ValueError("Production requires a non-demo API_OWNER_ID")
@@ -95,13 +100,16 @@ def load_settings() -> AppSettings:
         # Errors must never include a connection string or provider credential.
         validate_production_database_url(os.environ.get("DATABASE_URL", ""))
         provider = urlsplit(os.environ.get("LLM_BASE_URL", "https://api.groq.com/openai/v1"))
-        if provider.scheme != "https" or not provider.netloc or provider.username or provider.password:
-            raise ValueError("Production LLM_BASE_URL requires HTTPS without embedded credentials")
+        if (
+            provider.scheme != "https" or not provider.hostname or provider.username or provider.password
+            or provider.query or provider.fragment
+        ):
+            raise ValueError("Production LLM_BASE_URL requires HTTPS without credentials, query or fragment")
         from app.llm.config import load_llm_settings
 
         try:
             llm = load_llm_settings()
-            if llm.api_key.get_secret_value().startswith("REPLACE_"):
+            if llm.api_key.get_secret_value().upper().startswith("REPLACE_") or llm.model.upper().startswith("REPLACE_"):
                 raise ValueError
         except ValueError:
             raise ValueError("Production requires configured LLM_MODEL and LLM_API_KEY") from None

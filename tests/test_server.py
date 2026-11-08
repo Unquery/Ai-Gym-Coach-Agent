@@ -36,12 +36,14 @@ def test_configuration_failure_never_prints_exception(monkeypatch, capsys) -> No
 def test_server_closes_pool_after_graceful_run(monkeypatch) -> None:
     events = []
     monkeypatch.setenv("PORT", "10000")
+    monkeypatch.setenv("WEB_CONCURRENCY", "8")
     monkeypatch.setattr(server, "load_settings", lambda: SimpleNamespace(log_level="INFO"))
 
     def run(application, **options):
         assert application == "app.main:app"
         assert options["port"] == 10000 and options["host"] == "0.0.0.0"
         assert options["timeout_graceful_shutdown"] == 100
+        assert options["workers"] == 1
         assert not options.get("reload") and not options.get("factory")
         events.append("drained")
 

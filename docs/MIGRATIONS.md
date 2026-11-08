@@ -3,7 +3,7 @@
 Use `python -m app.db.migrate` as a single release job before admitting traffic.
 It requires `MIGRATION_DATABASE_URL` with no runtime/test URL fallback. Use the
 direct PostgreSQL endpoint, not a transaction-pooling endpoint. Production URLs
-require `postgresql+psycopg` and TLS (`sslmode=require` or preferably `verify-full`
+require `postgresql+psycopg` and hostname-verified TLS (`sslmode=verify-full`
 with the provider's CA configuration). Migration jobs need no API or LLM secrets.
 
 1. Take a provider snapshot/backup and verify the restore procedure before an

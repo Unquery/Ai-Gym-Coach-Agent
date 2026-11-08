@@ -27,6 +27,7 @@ def main() -> int:
             "app.main:app", host="0.0.0.0", port=port,
             access_log=False, server_header=False, proxy_headers=False,
             log_config=None,
+            workers=1,
             limit_concurrency=16, timeout_graceful_shutdown=100,
         )
     finally:

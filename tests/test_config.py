@@ -11,7 +11,7 @@ def production_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "APP_ENV": "production", "ENABLE_DEMO_AUTH": "false",
         "API_AUTH_TOKEN": "synthetic-test-token-" + "x" * 32,
         "API_OWNER_ID": str(uuid4()), "ALLOWED_HOSTS": "gym.example.com",
-        "DATABASE_URL": "postgresql+psycopg://runtime:synthetic@db.example.com/gym?sslmode=require",
+        "DATABASE_URL": "postgresql+psycopg://runtime:synthetic@db.example.com/gym?sslmode=verify-full",
         "LLM_MODEL": "synthetic-model", "LLM_API_KEY": "synthetic-provider-key",
         "LLM_BASE_URL": "https://provider.example.com/v1", "CORS_ORIGINS": "",
     }.items():
@@ -34,6 +34,13 @@ def test_safe_defaults_and_production_secrets(production_env: None) -> None:
     ("DATABASE_URL", "postgresql+psycopg://runtime:synthetic@db.example.com/gym"),
     ("LLM_BASE_URL", "http://provider.example.com/v1"),
     ("LLM_API_KEY", ""), ("LOG_LEVEL", "DEBUG"),
+    ("API_AUTH_TOKEN", " " * 40),
+    ("API_AUTH_TOKEN", "synthetic token-" + "x" * 32),
+    ("DATABASE_URL", "postgresql+psycopg://runtime:synthetic@db.example.com/gym?sslmode=require"),
+    ("DATABASE_URL", "postgresql+psycopg://runtime:synthetic@db.example.com/gym?sslmode=verify-ca"),
+    ("LLM_BASE_URL", "https://provider.example.com/v1?secret=synthetic"),
+    ("CORS_ORIGINS", "https://frontend.example.com:invalid"),
+    ("LLM_MODEL", "REPLACE_WITH_MODEL"),
 ])
 def test_production_rejects_unsafe_configuration(
     production_env: None, monkeypatch: pytest.MonkeyPatch, name: str, value: str,
