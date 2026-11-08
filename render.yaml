@@ -6,6 +6,7 @@ services:
     runtime: docker
     plan: free
     region: frankfurt
+    branch: master
     dockerfilePath: ./Dockerfile
     dockerContext: .
     autoDeployTrigger: "off"
@@ -34,5 +35,10 @@ services:
         value: "3"
       - key: DB_MAX_OVERFLOW
         value: "2"
+      # Conservative initial demo admission; this is not a provider token budget.
+      - key: CHAT_REQUESTS_PER_MINUTE
+        value: "2"
+      - key: API_REQUESTS_PER_MINUTE
+        value: "60"
       - key: LOG_LEVEL
         value: INFO
