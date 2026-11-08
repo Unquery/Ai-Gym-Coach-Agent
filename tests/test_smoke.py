@@ -38,13 +38,19 @@ def test_smoke_checks_are_read_only_and_fail_closed(failure, capsys) -> None:
 
 @pytest.mark.parametrize("target", [
     "http://api.example.com", "https://user:secret@api.example.com", "https://api.example.com?secret=x",
+    "https://api.example.com:invalid", "https://api.example.com:65536", "https://api.example.com\n",
 ])
 def test_unsafe_smoke_targets_are_rejected(target) -> None:
     with pytest.raises(ValueError):
         validate_target(target, TOKEN)
 
 
-def test_smoke_cli_requires_a_secret_without_printing_input(monkeypatch, capsys) -> None:
-    monkeypatch.delenv("SMOKE_API_AUTH_TOKEN", raising=False)
-    assert main(["https://api.example.com"]) == 2
+@pytest.mark.parametrize(("target", "token"), [
+    ("https://api.example.com", ""),
+    ("https://api.example.com:invalid", TOKEN),
+    ("https://api.example.com", TOKEN + "\x7f"),
+])
+def test_smoke_cli_requires_safe_configuration_without_printing_input(monkeypatch, capsys, target, token) -> None:
+    monkeypatch.setenv("SMOKE_API_AUTH_TOKEN", token)
+    assert main([target]) == 2
     assert "api.example.com" not in capsys.readouterr().out

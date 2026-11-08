@@ -9,13 +9,20 @@ import httpx2
 
 
 def validate_target(base_url: str, token: str) -> str:
-    parsed = urlsplit(base_url)
+    try:
+        parsed = urlsplit(base_url)
+        # Validate before opening a client; InvalidURL is not an HTTPError.
+        parsed.port
+        httpx2.URL(base_url)
+    except (ValueError, httpx2.InvalidURL):
+        raise ValueError("Invalid smoke target") from None
     local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
     if (
         not parsed.hostname or (parsed.scheme != "https" and not local_http)
         or parsed.username or parsed.password or parsed.query or parsed.fragment
         or parsed.path not in {"", "/"} or not token.strip()
-        or not token.isascii() or any(char.isspace() for char in token)
+        or any(ord(char) < 33 or ord(char) == 127 for char in base_url)
+        or not token.isascii() or any(ord(char) < 33 or ord(char) == 127 for char in token)
     ):
         raise ValueError("Use an HTTPS origin and set SMOKE_API_AUTH_TOKEN; HTTP is loopback-only")
     return base_url.rstrip("/")
