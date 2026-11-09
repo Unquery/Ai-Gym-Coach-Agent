@@ -155,7 +155,7 @@ or automatically retrying. Keep the previous schema-compatible release available
    free plan, runtime-only secrets, `/ready`, required hosts and no CORS origins
    unless needed. Keep service auto-deploy off and Blueprint Auto Sync off.
    Only the separately approved creation/deploy action may start the service.
-6. Verify Render's deployed commit, actual HTTPS, health/readiness and all six
+6. Verify Render's deployed commit, actual HTTPS, health/readiness and all seven
    [smoke checks](SMOKE_TESTS.md). Inspect sanitized JSON logs and exercise
    controlled DB failure/recovery only on a separately approved test target.
 7. Obtain separate permission for a bounded live Groq scenario and any cost.

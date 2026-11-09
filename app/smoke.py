@@ -36,6 +36,9 @@ def run_smoke(base_url: str, token: str, *, transport: httpx2.BaseTransport | No
         ("anonymous_access", "/workouts?limit=1", False, 401, None),
         ("invalid_token", "/workouts?limit=1", "invalid", 401, None),
         ("authenticated_database_read", "/workouts?limit=1", True, 200, []),
+        ("api_validation_error", "/workouts?limit=0", True, 422, {"detail": [
+            {"loc": ["query", "limit"], "type": "greater_than_equal", "msg": "Invalid request value"},
+        ]}),
         ("production_docs", "/openapi.json", False, 404, None),
     )
     success = True

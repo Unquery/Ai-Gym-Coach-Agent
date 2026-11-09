@@ -6,7 +6,7 @@ from app.smoke import main, run_smoke, validate_target
 TOKEN = "synthetic-smoke-token"
 
 
-@pytest.mark.parametrize("failure", [None, "database", "auth", "redirect", "network", "malformed", "oversized"])
+@pytest.mark.parametrize("failure", [None, "database", "auth", "redirect", "network", "malformed", "oversized", "validation"])
 def test_smoke_checks_are_read_only_and_fail_closed(failure, capsys) -> None:
     requests = []
 
@@ -25,12 +25,17 @@ def test_smoke_checks_are_read_only_and_fail_closed(failure, capsys) -> None:
             return httpx2.Response(404)
         if failure == "redirect":
             return httpx2.Response(307, headers={"Location": "https://foreign.example.com"})
+        if request.url.params.get("limit") == "0":
+            issue = {"loc": ["query", "limit"], "type": "greater_than_equal", "msg": "Invalid request value"}
+            if failure == "validation":
+                issue["input"] = TOKEN
+            return httpx2.Response(422, json={"detail": [issue]})
         if request.headers.get("authorization") == "Bearer " + TOKEN:
             return httpx2.Response(200, json=[])
         return httpx2.Response(200 if failure == "auth" else 401, headers={"WWW-Authenticate": "Bearer"})
 
     assert run_smoke("https://api.example.com", TOKEN, transport=httpx2.MockTransport(respond)) == (failure is None)
-    assert len(requests) == 6
+    assert len(requests) == 7
     assert all(request.url.host == "api.example.com" for request in requests)
     output = capsys.readouterr().out
     assert TOKEN not in output and "foreign.example.com" not in output
