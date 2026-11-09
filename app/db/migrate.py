@@ -9,7 +9,7 @@ from alembic.config import Config
 from sqlalchemy import Engine, text
 
 from app.config import validate_production_database_url
-from app.db.session import create_db_engine
+from app.db.session import create_db_engine, postgres_url
 
 # Stable, database-local namespace for this application's deployment lock.
 MIGRATION_LOCK = (18417, 8)
@@ -38,6 +38,9 @@ def main() -> int:
             raise ValueError("MIGRATION_DATABASE_URL is required")
         if os.environ.get("APP_ENV", "development") == "production":
             validate_production_database_url(url)
+            host = (postgres_url(url).host or "").lower()
+            if host.endswith(".neon.tech") and "-pooler." in host:
+                raise ValueError("Neon migrations require a direct endpoint")
         engine = create_db_engine(url)
         upgrade_database(engine)
     except Exception:
