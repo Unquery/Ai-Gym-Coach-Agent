@@ -1229,6 +1229,7 @@ def test_chat_returns_controlled_provider_errors_without_details_or_retries(
     chat_context: ChatContext,
     failure: str,
     expected_status: int,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     api, requests, responses, clients = chat_context
     if failure == "timeout":
@@ -1266,6 +1267,14 @@ def test_chat_returns_controlled_provider_errors_without_details_or_retries(
         and "synthetic-test-key" not in response.text
     )
     assert len(requests) == 1 and clients[0].is_closed
+    failures = [record for record in caplog.records if record.msg == "chat_failed"]
+    assert len(failures) == 1
+    assert failures[0].request_id == response.headers["x-request-id"]
+    from app.logging import JsonFormatter
+
+    logged = JsonFormatter().format(failures[0])
+    assert json.loads(logged)["error_type"]
+    assert SENSITIVE_DETAIL not in logged and "synthetic-test-key" not in logged
 
 
 def test_missing_chat_configuration_is_controlled_and_does_not_affect_health(

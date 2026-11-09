@@ -10,7 +10,7 @@ from uuid import uuid4
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 EVENTS = {"http_request", "application_started", "application_stopped", "application_error", "database_error",
-          "startup_configuration_error"}
+          "startup_configuration_error", "readiness_changed", "chat_failed"}
 
 
 class JsonFormatter(logging.Formatter):

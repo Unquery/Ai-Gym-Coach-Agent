@@ -95,6 +95,13 @@ def ready(request: Request) -> JSONResponse:
         available = database_ready(production=request.app.state.settings.environment == "production")
     except (SQLAlchemyError, RuntimeError, ValueError):
         available = False
+    with request.app.state.readiness_lock:
+        if request.app.state.readiness_available is not available:
+            request.app.state.readiness_available = available
+            logging.getLogger("gym.application").log(
+                logging.INFO if available else logging.ERROR, "readiness_changed",
+                extra={"request_id": request.state.request_id, "status": 200 if available else 503},
+            )
     return JSONResponse(
         {"status": "ready" if available else "not_ready"}, status_code=200 if available else 503,
     )
@@ -182,6 +189,12 @@ def _run_chat_turn(
     return response
 
 
+def _log_chat_failure(request: Request, error: Exception) -> None:
+    logging.getLogger("gym.application").error("chat_failed", extra={
+        "request_id": request.state.request_id, "error_type": type(error).__name__,
+    })
+
+
 @router.post("/agent/chat", response_model=AgentChatResponse)
 def agent_chat(
     payload: AgentChatRequest,
@@ -238,13 +251,17 @@ def agent_chat(
         raise HTTPException(status_code=503, detail="AI service is unavailable") from None
     except ConversationNotFoundError:
         raise HTTPException(status_code=404, detail="Conversation not found") from None
-    except (APITimeoutError, TimeoutError):
+    except (APITimeoutError, TimeoutError) as error:
+        _log_chat_failure(request, error)
         raise HTTPException(status_code=504, detail="AI service timed out") from None
-    except RateLimitError:
+    except RateLimitError as error:
+        _log_chat_failure(request, error)
         raise HTTPException(status_code=503, detail="AI service is unavailable") from None
-    except (APIError, AgentError):
+    except (APIError, AgentError) as error:
+        _log_chat_failure(request, error)
         raise HTTPException(status_code=502, detail="AI response could not be produced") from None
-    except SQLAlchemyError:
+    except SQLAlchemyError as error:
+        _log_chat_failure(request, error)
         raise HTTPException(status_code=503, detail="AI service is unavailable") from None
 
 
@@ -485,6 +502,8 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     application.state.settings = settings
     application.state.rate_limits = ({"api": deque(), "chat": deque()}, Lock())
     application.state.chat_slots = BoundedSemaphore(2)
+    application.state.readiness_lock = Lock()
+    application.state.readiness_available = None
     application.include_router(public_routes)
     application.include_router(router)
     application.add_middleware(RequestBodyLimit, max_bytes=settings.max_request_bytes)

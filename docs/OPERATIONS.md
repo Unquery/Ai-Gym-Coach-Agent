@@ -35,6 +35,15 @@ status and duration in milliseconds. Unknown paths use `<unmatched>`. Successful
 health/readiness probes are omitted. Clients receive `X-Request-ID`; incoming
 request IDs are not trusted. Responses are marked no-store and nosniff.
 
+`readiness_changed` records the first observed readiness result and subsequent
+200/503 transitions, with the probe's request ID. Repeated identical probes do
+not emit more transition events; failed HTTP probes still retain their request
+logs. `chat_failed` records only the code-owned exception class and request ID
+for caught provider/agent/database failures. Join it to the `http_request` event
+and response `X-Request-ID` to find status/latency without logging payloads or
+exception messages. A 503 readiness event does not distinguish connectivity from
+revision/grant problems; follow the recovery checks rather than guessing a cause.
+
 The JSON formatter never formats arbitrary logger messages, arguments, exception
 text/tracebacks or SQL. Application failures expose only a code-owned exception
 class and request ID. Provider/HTTP-library logging is reduced to warnings, whose

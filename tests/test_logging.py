@@ -39,3 +39,22 @@ def test_request_logs_use_templates_and_generated_ids(caplog) -> None:
     assert logs[0]["request_id"] == request_id and logs[0]["status"] == 401
     assert logs[1]["route"] == "<unmatched>"
     assert "synthetic-sensitive" not in json.dumps(logs) and "123456" not in json.dumps(logs)
+
+
+def test_readiness_transitions_are_correlated_without_repeating_probe_events(monkeypatch, caplog) -> None:
+    from app.api import application as module
+
+    application = create_app(AppSettings())
+    state = [False]
+    monkeypatch.setattr(module, "database_ready", lambda **kwargs: state[0])
+    with caplog.at_level(logging.INFO), TestClient(application) as client:
+        failed = client.get("/ready")
+        client.get("/ready")
+        state[0] = True
+        recovered = client.get("/ready")
+        client.get("/ready")
+    transitions = [record for record in caplog.records if record.msg == "readiness_changed"]
+    assert [record.status for record in transitions] == [503, 200]
+    assert [record.request_id for record in transitions] == [
+        failed.headers["x-request-id"], recovered.headers["x-request-id"],
+    ]
