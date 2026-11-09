@@ -56,6 +56,8 @@ def test_safe_profiles_pass_without_network(cloud_profile, capsys, profile):
     ("runtime", "ALLOWED_HOSTS", "REPLACE_WITH_NAME.onrender.com,localhost,127.0.0.1"),
     ("runtime", "LLM_BASE_URL", "https://other.example.com/v1"),
     ("runtime", "CHAT_REQUESTS_PER_MINUTE", "10"),
+    ("runtime", "DB_POOL_SIZE", "4"),
+    ("runtime", "DB_MAX_OVERFLOW", "3"),
 ])
 def test_wrong_profile_is_rejected_without_exposing_input(cloud_profile, monkeypatch, capsys, profile, field, value):
     cloud_profile(profile)

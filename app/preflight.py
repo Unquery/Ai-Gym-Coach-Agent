@@ -44,6 +44,7 @@ def validate_profile(profile: Literal["runtime", "migration"]) -> None:
             or str(llm.base_url).rstrip("/") != DEFAULT_LLM_BASE_URL
             or llm.model != "openai/gpt-oss-20b"
             or settings.chat_requests_per_minute > 2 or settings.api_requests_per_minute > 60
+            or settings.db_pool_size > 3 or settings.db_max_overflow > 2
         ):
             raise ValueError("Use the reviewed initial Render/Groq demo profile")
 

@@ -43,6 +43,8 @@ def create_db_engine(url: str | URL | None = None) -> Engine:
     return create_engine(
         target,
         pool_pre_ping=True,
+        # Reuse recent connections; leave excess ones idle for server-side expiry.
+        pool_use_lifo=True,
         hide_parameters=True,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
