@@ -104,6 +104,39 @@ from approving resource creation. No connection or cloud write happened locally.
 
 ## Ordered rollout after explicit approval
 
+### Repeatable release commands
+
+Use a clean shell and the same reviewed source commit for the release image and
+Render deployment. Record the commit and local image ID in an ignored release
+note. Do not use Render startup or an initial-deploy hook to run migrations.
+First validate without network access:
+
+```powershell
+uv run --env-file .local/m9-migration.env --locked python -m app.release
+```
+
+After explicit approval for the exact database target, run the release image
+with only its migration secret file. The CA path in the templates is a Linux
+container path; a Windows-host preflight does not prove that file is available.
+Replace `REVIEWED_COMMIT` with the recorded commit, using an already built image:
+
+```powershell
+docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges --env-file .local/m9-migration.env --entrypoint python ai-gym-coach:REVIEWED_COMMIT -m app.release --execute-migrations
+if ($LASTEXITCODE -ne 0) { throw 'Release stopped; do not deploy. Inspect the database revision before retrying.' }
+```
+
+`app.release` validates the separated M9 migration profile before invoking the
+existing advisory-locked, transactional upgrade exactly once. Exit 0 without the
+flag means offline configuration only; exit 0 with the flag means migrations
+completed. Exit 1 stops the release; invalid arguments exit 2. It never provisions
+roles, seeds data, starts the API, pushes code or triggers Render. Runtime grants
+must be provisioned once and verified after each upgrade before manual deployment.
+For an existing target, stop writes and verify backup/restore first. If commit
+acknowledgement is lost, inspect the stored revision rather than guessing success
+or automatically retrying. Keep the previous schema-compatible release available.
+
+### Deployment gates
+
 1. Select the exact release commit and approve any required push separately.
    Local commits are not available to Render's Git build until published. Review
    plan/region/estimated usage and obtain creation/deployment approval; do not
