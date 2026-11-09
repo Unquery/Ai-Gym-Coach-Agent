@@ -4,6 +4,13 @@ Local release verification is complete; no cloud deployment or live-provider che
 Use the full [release instructions](DEPLOYMENT.md), [operations](OPERATIONS.md)
 and [security boundary](SECURITY.md) when deployment is explicitly authorized.
 
+For the current M9 sequence, use [First cloud deployment](FIRST_DEPLOYMENT.md).
+The M8 image/TCP evidence below is historical. The 2026-11-09 M9 image has been
+rebuilt and checked with network disabled (UID, CA, artifact isolation, release
+plan and seven ASGI smoke checks with stubbed database responses). Actual cloud
+TLS/database/HTTP and account settings remain unverified; see the
+[current readiness review](CLOUD_DEPLOYMENT.md#local-readiness-review-2026-11-09).
+
 ## Locally verified
 
 - [x] Production entrypoint validates settings/port, emits sanitized startup errors,

@@ -6,6 +6,8 @@ acceptance remains complete. This milestone closes
 only after the external checks below actually pass; do not infer deployment from
 the presence of a Blueprint, API key or local image.
 
+For the concise operator sequence, use [First cloud deployment](FIRST_DEPLOYMENT.md).
+
 ## Architecture and decisions
 
 One Render Docker web service calls Neon PostgreSQL over verified TLS and
@@ -179,7 +181,7 @@ unsafe runtime privileges, migration failure, TLS/auth/readiness failure or quot
 errors. A failed gate leaves M9 incomplete. Public multi-user auth and new product
 features remain outside this deployment milestone.
 
-## Local handoff evidence
+## Initial local handoff evidence (2026-11-08)
 
 The reviewed Blueprint and rollout plan are committed separately from the offline
 preflight. Preflight/configuration checks passed 30 cases; the final separation
@@ -201,3 +203,30 @@ Only the initial private-secret generation happened; no role or account key was
 created or rotated at a provider. No push, resource creation, deployment, DB access,
 live Groq request or paid action occurred. M9 remains incomplete pending account
 inspection, a concrete approved deployment and the external acceptance evidence.
+
+## Local readiness review (2026-11-09)
+
+All six requested local preparation tasks are complete. The runtime template and
+Blueprint now agree on 2 chat/60 API requests per minute, closed CORS and explicit
+timeouts/body limits. Direct Neon TLS URLs, the small SQLAlchemy pool, pre-ping,
+transactional Alembic upgrades and separated runtime/migration roles were reviewed.
+The migration CLI now rejects a production Neon pooler before engine creation.
+Exact configured operator/provider secrets are blocked in chat input and output.
+An offline-by-default release CLI and a seventh read-only API-error smoke check
+are prepared. No dependencies, schema revisions or public API payloads changed.
+
+Validation: 30 configuration/preflight checks; 8 migration/connection-integrity
+checks; 210 security/chat/idempotency checks; 18 release/preflight/CLI checks;
+20 offline smoke/liveness checks; 109 confirmation/persistence/migration/readiness
+checks passed. Some groups overlap; these are run results, not unique test counts.
+No full-suite run was needed. Database tests used disposable local schemas; all
+provider calls were mocked. The final production image built successfully and
+passed network-disabled UID/CA/artifact-isolation, offline release and seven ASGI
+smoke checks. ASGI database responses were stubbed; this does not establish Neon
+connectivity or real cloud HTTP behavior. Previous M8 real local TCP/TLS evidence
+is historical and is not presented as verification of this new image.
+
+Remaining gates: real target credentials/hosts, account permissions/quotas/billing,
+Neon TLS/grants/revision and restore, approved push and Render deployment, actual
+HTTPS/smoke, monitoring/rollback and a separately approved bounded Groq scenario.
+No cloud resources, cloud migrations, cloud smoke, live Groq calls or push occurred.
