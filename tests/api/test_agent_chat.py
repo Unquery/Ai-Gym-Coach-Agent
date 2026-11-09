@@ -1811,13 +1811,20 @@ def test_chat_message_insert_failure_rolls_back_conversation_and_proposal(
 
 @pytest.mark.postgres
 @pytest.mark.parametrize("source", ["user", "assistant"])
+@pytest.mark.parametrize("secret_kind", ["provider", "operator"])
 def test_chat_does_not_store_the_configured_api_key_in_message_text(
     postgres_engine: Engine,
     postgres_chat: tuple[ChatContext, int, UUID],
     source: str,
+    secret_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (api, requests, responses, clients), _, _ = postgres_chat
-    secret = "synthetic-test-key"
+    secret = "synthetic-test-key" if secret_kind == "provider" else "synthetic-operator-" + "x" * 32
+    if secret_kind == "operator":
+        monkeypatch.setattr(app.state, "settings", app.state.settings.model_copy(update={
+            "api_auth_token": SecretStr(secret),
+        }))
     responses.append(completion_response(secret if source == "assistant" else "Safe answer."))
     response = api.post("/agent/chat", json={"message": secret if source == "user" else "Hello"})
     assert response.status_code == (422 if source == "user" else 502)

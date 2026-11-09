@@ -121,6 +121,7 @@ async def get_chat_idempotency(
 def _run_chat_turn(
     payload: AgentChatRequest, *, session: Session, user_id: UUID,
     request_id: UUID | None = None,
+    operator_token: str | None = None,
 ) -> AgentAnswerResponse | AgentProposalResponse:
     """Run inside the caller's transaction; this helper never commits."""
     try:
@@ -128,8 +129,11 @@ def _run_chat_turn(
     except ValueError:
         raise HTTPException(status_code=503, detail="AI service is unavailable") from None
 
-    # Do not insert the configured provider credential even if pasted into chat.
-    if settings.api_key.get_secret_value() in payload.message:
+    # Reject exact configured credentials before persistence or provider dispatch.
+    protected_secrets = [settings.api_key.get_secret_value()]
+    if operator_token:
+        protected_secrets.append(operator_token)
+    if any(secret in payload.message for secret in protected_secrets):
         raise HTTPException(status_code=422, detail="Message contains a configured secret")
 
     conversation_id = payload.conversation_id
@@ -169,7 +173,7 @@ def _run_chat_turn(
     else:
         content = result.model_dump_json()
         response = AgentProposalResponse(conversation_id=conversation_id, proposal=result)
-    if settings.api_key.get_secret_value() in content:
+    if any(secret in content for secret in protected_secrets):
         raise AgentError("The AI response contains a configured secret")
     append_message(
         conversation_id, session=session, user_id=user_id,
@@ -181,6 +185,7 @@ def _run_chat_turn(
 @router.post("/agent/chat", response_model=AgentChatResponse)
 def agent_chat(
     payload: AgentChatRequest,
+    request: Request,
     admission: Annotated[None, Depends(admit_chat)],
     session: Annotated[Session, Depends(get_session)],
     user_id: Annotated[UUID, Depends(get_current_user_id)],
@@ -210,7 +215,11 @@ def agent_chat(
                     status_code=stored.response_status, content=stored.response_body,
                 )
             else:
-                response = _run_chat_turn(payload, session=session, user_id=user_id, request_id=request_id)
+                token = request.app.state.settings.api_auth_token
+                response = _run_chat_turn(
+                    payload, session=session, user_id=user_id, request_id=request_id,
+                    operator_token=token.get_secret_value() if token else None,
+                )
                 if stored is not None:
                     # This update and all conversation/draft/proposal writes commit atomically.
                     complete_chat_request(

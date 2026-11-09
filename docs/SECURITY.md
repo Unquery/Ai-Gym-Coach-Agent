@@ -14,6 +14,10 @@ the token in the hosting secret manager and rotate it by replacing the secret an
 restarting the single API instance. Do not use real private workout data for a
 portfolio demonstration. Restarting revokes the old token. No token is stored in
 the database, responses or application logs.
+Chat rejects exact occurrences of the configured operator token or provider key
+before saving the user message or calling the LLM. If a model response contains
+either secret, the turn fails and its transaction rolls back. This exact-match
+guard is not a general secret scanner; never paste credentials into chat.
 
 `APP_ENV=production` rejects demo identity, placeholder/short/non-ASCII or whitespace-bearing tokens,
 the synthetic owner, insecure database/provider URLs, wildcard hosts/origins and
