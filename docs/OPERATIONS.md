@@ -1,5 +1,8 @@
 # Health and application logs
 
+For startup, migration, outage and uncertain-write decisions, use the
+[failure recovery procedure](RECOVERY.md).
+
 Start production with `python -m app.server` (the Docker default). This configures
 JSON stdout logging and disables Uvicorn's plaintext access logs. No reload,
 automatic migrations, seed data, LLM request tracing or paid readiness requests.
