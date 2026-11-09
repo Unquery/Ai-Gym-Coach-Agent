@@ -230,3 +230,31 @@ Remaining gates: real target credentials/hosts, account permissions/quotas/billi
 Neon TLS/grants/revision and restore, approved push and Render deployment, actual
 HTTPS/smoke, monitoring/rollback and a separately approved bounded Groq scenario.
 No cloud resources, cloud migrations, cloud smoke, live Groq calls or push occurred.
+
+## Recovery and operations follow-up (2026-11-09)
+
+The five additional local tasks are complete. [Recovery](RECOVERY.md) now separates
+startup failure, migration rollback, unknown commit outcomes, outages and compatible
+application rollback. Structured `readiness_changed` and `chat_failed` events use
+generated request IDs and omit exception text and inputs. The pool uses LIFO plus
+pre-ping, and M9 preflight caps it at 3 + 2. Image/import resource measurements and
+their limits are recorded in [operations](OPERATIONS.md#free-tier-resource-envelope).
+Smoke still makes seven read-only GET requests; every response now also verifies
+request ID, no-store/nosniff and HTTPS HSTS. The first-deployment guide includes
+missing account values, fail-closed build/release commands and bounded Groq preview.
+
+Targeted validation passed: 14 logging/provider-error/health cases, 19 pool and
+migration/preflight cases, 24 smoke/logging cases and 32 final smoke/release/startup
+cases. Groups overlap. The current image built from `c191c70` runtime source passed
+network-disabled, read-only, 512 MiB container checks for UID/CA/artifact isolation,
+offline release and all seven ASGI smoke checks with stubbed database responses.
+The existing live-runner preview confirmed 3 requests/512 completion tokens per
+call with no live flag or network. No full regression suite or new real TCP/TLS
+integration was repeated; previous data-integrity/HITL/idempotency evidence remains
+applicable, and local connection-loss/migration rollback checks passed again.
+
+Local preparation has no identified blocker in the agreed single-operator scope.
+Actual account access, target values, quota/billing, cloud TLS/grants/restore,
+approved push/deployment, target smoke and live Groq remain external gates. Existing
+incomplete secret profiles must still be completed and pass preflight before any
+execution. No cloud resource/write, live Groq request, deployment or push occurred.
