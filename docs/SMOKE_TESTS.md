@@ -14,6 +14,11 @@ production OpenAPI, plus a sanitized 422 for an invalid workout-list limit.
 Readiness checks database connectivity, packaged migration
 head and runtime role restrictions. The authenticated read also checks runtime
 table access. No LLM, writes, migrations or paid provider calls are made.
+Every response must also carry a generated 32-hex request ID,
+`Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. HTTPS targets must include HSTS
+with a positive `max-age`; loopback HTTP does not require HSTS. These checks reuse
+the same seven GET requests. Smoke consumes the in-memory authenticated API rate
+budget and produces ordinary access logs, but never persists application data.
 
 Prepare and verify these checks offline, without a target or token:
 

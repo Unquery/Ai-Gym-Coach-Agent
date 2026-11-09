@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from urllib.parse import urlsplit
 
 import httpx2
@@ -56,7 +57,20 @@ def run_smoke(base_url: str, token: str, *, transport: httpx2.BaseTransport | No
                         if len(body) + len(chunk) > 16384:
                             raise ValueError("Oversized smoke response")
                         body.extend(chunk)
-                    passed = response.status_code == status
+                    passed = (
+                        response.status_code == status
+                        and re.fullmatch(r"[0-9a-f]{32}", response.headers.get("x-request-id", "")) is not None
+                        and "no-store" in {
+                            item.strip().lower() for item in response.headers.get("cache-control", "").split(",")
+                        }
+                        and response.headers.get("x-content-type-options", "").lower() == "nosniff"
+                    )
+                    if base_url.lower().startswith("https://"):
+                        hsts = re.search(
+                            r"(?:^|;)\s*max-age\s*=\s*(\d+)(?:\s*;|\s*$)",
+                            response.headers.get("strict-transport-security", "").lower(),
+                        )
+                        passed = passed and hsts is not None and int(hsts.group(1)) > 0
                     if expected is not None:
                         value = json.loads(body)
                         passed = passed and (isinstance(value, list) if expected == [] else value == expected)

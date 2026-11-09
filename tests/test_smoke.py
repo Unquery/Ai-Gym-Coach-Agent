@@ -6,7 +6,10 @@ from app.smoke import main, run_smoke, validate_target
 TOKEN = "synthetic-smoke-token"
 
 
-@pytest.mark.parametrize("failure", [None, "database", "auth", "redirect", "network", "malformed", "oversized", "validation"])
+@pytest.mark.parametrize("failure", [
+    None, "database", "auth", "redirect", "network", "malformed", "oversized", "validation",
+    "cache", "request_id", "hsts", "nosniff",
+])
 def test_smoke_checks_are_read_only_and_fail_closed(failure, capsys) -> None:
     requests = []
 
@@ -34,7 +37,23 @@ def test_smoke_checks_are_read_only_and_fail_closed(failure, capsys) -> None:
             return httpx2.Response(200, json=[])
         return httpx2.Response(200 if failure == "auth" else 401, headers={"WWW-Authenticate": "Bearer"})
 
-    assert run_smoke("https://api.example.com", TOKEN, transport=httpx2.MockTransport(respond)) == (failure is None)
+    def respond_with_headers(request):
+        response = respond(request)
+        response.headers.update({
+            "X-Request-ID": "a" * 32, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+            "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+        })
+        if failure in {"cache", "request_id", "hsts", "nosniff"}:
+            header, value = {
+                "cache": ("Cache-Control", "public, max-age=3600"),
+                "request_id": ("X-Request-ID", TOKEN),
+                "hsts": ("Strict-Transport-Security", "max-age=0"),
+                "nosniff": ("X-Content-Type-Options", ""),
+            }[failure]
+            response.headers[header] = value
+        return response
+
+    assert run_smoke("https://api.example.com", TOKEN, transport=httpx2.MockTransport(respond_with_headers)) == (failure is None)
     assert len(requests) == 7
     assert all(request.url.host == "api.example.com" for request in requests)
     output = capsys.readouterr().out
