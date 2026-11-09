@@ -88,7 +88,7 @@ These commands make no network requests. They reuse production settings validati
 and check the selected direct Neon role/TLS profile, exact Groq model/endpoint,
 Render hosts, initial admission limits and absence of unrelated credentials.
 Use chat=2/min and API=60/min in the M9 runtime file, matching `render.yaml`;
-generic deployment templates retain the earlier 10/120 defaults. A shell that
+the runtime template now uses the same 2/60 limits. A shell that
 already loaded development/test/admin secrets fails separation checks: start a
 clean shell instead of copying all development variables into the release job.
 Exit 0 means offline configuration only; 1 means configuration failure; invalid

@@ -19,6 +19,8 @@ services:
         value: "false"
       - key: ALLOWED_HOSTS
         sync: false
+      - key: CORS_ORIGINS
+        value: ""
       - key: DATABASE_URL
         sync: false
       - key: API_AUTH_TOKEN
@@ -35,6 +37,12 @@ services:
         value: "3"
       - key: DB_MAX_OVERFLOW
         value: "2"
+      - key: DB_CONNECT_TIMEOUT
+        value: "5"
+      - key: DB_STATEMENT_TIMEOUT_MS
+        value: "15000"
+      - key: MAX_REQUEST_BYTES
+        value: "16384"
       # Conservative initial demo admission; this is not a provider token budget.
       - key: CHAT_REQUESTS_PER_MINUTE
         value: "2"
